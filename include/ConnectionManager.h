@@ -52,6 +52,16 @@ public:
     }
   }
 
+  std::string escapeSQL(const std::string &value) {
+    std::string escaped = value;
+    size_t pos = 0;
+    while ((pos = escaped.find("'", pos)) != std::string::npos) {
+      escaped.replace(pos, 1, "''"); // duplicar comillas simples
+      pos += 2;
+    }
+    return escaped;
+  }
+
   std::vector<std::vector<std::string>>
   executeQueryMariaDB(MYSQL *conn, const std::string &query) {
     std::vector<std::vector<std::string>> results;

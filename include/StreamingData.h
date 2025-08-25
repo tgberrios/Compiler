@@ -424,31 +424,380 @@ public:
     }
   }
 
-  void run() {
-    std::cout << "[INFO] Inicializando full load..." << std::endl;
-    syncCatalog();
-    setupTableTarget();
-    transferData(); // Ahora sin parámetros
+  void syncCatalogPostgresToMariaDB() {
+    ConnectionManager cm;
 
+    // Conexión a Postgres DataLake
+    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
+                                     "user=tomy.berrios password=Yucaquemada1");
+
+    // Columnas candidatas para incremental
+    static const std::vector<std::string> dateCandidates = {
+        "updated_at", "created_at", "fecha_actualizacion", "fecha_creacion"};
+
+    // Obtener todas las tablas del schema DataLake que se quieren replicar
+    auto tables = cm.executeQueryPostgres(
+        *pgConn, "SELECT schema_name, table_name, replicate_to_mariadb, "
+                 "connection_string "
+                 "FROM metadata.catalog "
+                 "WHERE active='YES' AND db_engine='Postgres';");
+
+    for (const auto &row : tables) {
+      if (row.size() < 4)
+        continue;
+
+      std::string schema_name = row[0].as<std::string>();
+      std::string table_name = row[1].as<std::string>();
+      bool replicateToMariaDB = !row[2].is_null() && row[2].as<bool>();
+      std::string mariadbConnectionString =
+          row[3].is_null() ? "" : row[3].as<std::string>();
+
+      if (!replicateToMariaDB || mariadbConnectionString.empty()) {
+        std::cout << "[INFO] Skipping table " << schema_name << "."
+                  << table_name
+                  << " (replicate_to_mariadb=FALSE or no connection_string)"
+                  << std::endl;
+        continue;
+      }
+
+      // Detectar columna para incremental (last_sync_column)
+      auto columns = cm.executeQueryPostgres(
+          *pgConn, "SELECT column_name "
+                   "FROM information_schema.columns "
+                   "WHERE table_schema='" +
+                       schema_name + "' AND table_name='" + table_name + "';");
+
+      std::string lastSyncColumn;
+      for (const auto &col : columns) {
+        std::string colName = col[0].as<std::string>();
+        for (const auto &candidate : dateCandidates) {
+          if (colName == candidate) {
+            lastSyncColumn = colName;
+            break;
+          }
+        }
+        if (!lastSyncColumn.empty())
+          break;
+      }
+
+      // Insertar o actualizar en metadata.catalog
+      try {
+        pqxx::work txn(*pgConn);
+
+        // ON CONFLICT usa (schema_name, table_name, db_engine) para permitir
+        // coexistencia
+        txn.exec(
+            "INSERT INTO metadata.catalog "
+            "(schema_name, table_name, db_engine, active, last_offset, status, "
+            "last_sync_column, replicate_to_mariadb, connection_string, "
+            "cluster_name) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) "
+            "ON CONFLICT (schema_name, table_name, db_engine) DO UPDATE SET "
+            "active = EXCLUDED.active, "
+            "last_offset = EXCLUDED.last_offset, "
+            "status = EXCLUDED.status, "
+            "last_sync_column = EXCLUDED.last_sync_column, "
+            "replicate_to_mariadb = EXCLUDED.replicate_to_mariadb, "
+            "connection_string = EXCLUDED.connection_string, "
+            "cluster_name = EXCLUDED.cluster_name;",
+            pqxx::params(schema_name, table_name, "Postgres", "YES", 0,
+                         "full_load", lastSyncColumn, true,
+                         mariadbConnectionString, "DataLake"));
+
+        txn.commit();
+
+        std::cout << "[INFO] Table ready for Postgres → MariaDB: "
+                  << schema_name << "." << table_name
+                  << " (last_sync_column: " << lastSyncColumn << ")"
+                  << std::endl;
+
+      } catch (const std::exception &e) {
+        std::cerr << "[ERROR] Failed to update catalog for " << schema_name
+                  << "." << table_name << ": " << e.what() << std::endl;
+      }
+    }
+  }
+
+  void setupTableTargetPostgresToMariaDB() {
+    ConnectionManager cm;
+    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
+                                     "user=tomy.berrios password=Yucaquemada1");
+
+    // Traemos todas las tablas Postgres que se van a replicar
+    auto tables = cm.executeQueryPostgres(
+        *pgConn, "SELECT schema_name, table_name, connection_string "
+                 "FROM metadata.catalog "
+                 "WHERE active='YES' AND replicate_to_mariadb=TRUE AND "
+                 "db_engine='Postgres';");
+
+    for (const auto &row : tables) {
+      if (row.size() < 3)
+        continue;
+
+      std::string schema_name = row[0].as<std::string>();
+      std::string table_name = row[1].as<std::string>();
+      std::string mariadbConnStr = row[2].as<std::string>();
+
+      auto mariadbConn = cm.connectMariaDB(mariadbConnStr);
+      if (!mariadbConn) {
+        std::cerr << "[ERROR] No se pudo conectar a MariaDB: " << mariadbConnStr
+                  << std::endl;
+        continue;
+      }
+
+      // Crear base de datos si no existe (equivalente a schema)
+      cm.executeQueryMariaDB(mariadbConn.get(),
+                             "CREATE DATABASE IF NOT EXISTS `" + schema_name +
+                                 "`;");
+      cm.executeQueryMariaDB(mariadbConn.get(), "USE `" + schema_name + "`;");
+
+      // Revisar si la tabla ya existe en MariaDB
+      auto existsRes = cm.executeQueryMariaDB(
+          mariadbConn.get(), "SELECT COUNT(*) FROM information_schema.tables "
+                             "WHERE table_schema='" +
+                                 schema_name + "' AND table_name='" +
+                                 table_name + "';");
+
+      if (!existsRes.empty() && existsRes[0][0] != "0") {
+        std::cout << "[INFO] Tabla " << schema_name << "." << table_name
+                  << " ya existe en MariaDB. Skipping creation." << std::endl;
+        continue;
+      }
+
+      // Obtener columnas de Postgres
+      auto columns = cm.executeQueryPostgres(
+          *pgConn, "SELECT column_name, data_type, is_nullable, column_default "
+                   "FROM information_schema.columns "
+                   "WHERE table_schema='" +
+                       schema_name + "' AND table_name='" + table_name + "';");
+
+      if (columns.empty()) {
+        std::cerr << "[WARN] No se encontraron columnas para " << schema_name
+                  << "." << table_name << std::endl;
+        continue;
+      }
+
+      // Mapear tipos Postgres → MariaDB
+      std::unordered_map<std::string, std::string> pgToMaria = {
+          {"integer", "INT"},
+          {"bigint", "BIGINT"},
+          {"serial", "INT AUTO_INCREMENT"},
+          {"bigserial", "BIGINT AUTO_INCREMENT"},
+          {"numeric", "DECIMAL(65,30)"},
+          {"real", "FLOAT"},
+          {"double precision", "DOUBLE"},
+          {"boolean", "TINYINT(1)"},
+          {"text", "TEXT"},
+          {"varchar", "VARCHAR(255)"},
+          {"date", "DATE"},
+          {"timestamp without time zone", "DATETIME"},
+          {"timestamp with time zone", "DATETIME"}};
+
+      std::string createQuery =
+          "CREATE TABLE `" + schema_name + "`.`" + table_name + "` (";
+      for (const auto &col : columns) {
+        std::string name = col[0].as<std::string>();
+        std::string type = col[1].as<std::string>();
+        std::string nullable =
+            (col[2].as<std::string>() == "YES") ? "" : " NOT NULL";
+        std::string mappedType =
+            pgToMaria.count(type) ? pgToMaria[type] : "TEXT";
+
+        createQuery += "`" + name + "` " + mappedType + nullable + ", ";
+      }
+      createQuery.erase(createQuery.size() - 2, 2); // quitar la última coma
+      createQuery += ");";
+
+      try {
+        cm.executeQueryMariaDB(mariadbConn.get(), createQuery);
+        std::cout << "[INFO] Tabla creada en MariaDB: " << schema_name << "."
+                  << table_name << std::endl;
+      } catch (const std::exception &e) {
+        std::cerr << "[ERROR] No se pudo crear la tabla " << schema_name << "."
+                  << table_name << ": " << e.what() << std::endl;
+      }
+    }
+  }
+
+  void transferDataPostgresToMariaDB() {
+    ConnectionManager cm;
+    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
+                                     "user=tomy.berrios password=Yucaquemada1");
+
+    auto tables = cm.executeQueryPostgres(
+        *pgConn,
+        "SELECT schema_name, table_name, cluster_name, connection_string, "
+        "last_sync_time, last_sync_column, last_refresh "
+        "FROM metadata.catalog "
+        "WHERE active='YES' AND replicate_to_mariadb=TRUE AND "
+        "db_engine='Postgres';");
+
+    for (const auto &row : tables) {
+      std::string schema_name = row[0].as<std::string>();
+      std::string table_name = row[1].as<std::string>();
+      std::string cluster_name = row[2].as<std::string>();
+      std::string connection_string = row[3].as<std::string>();
+      std::string last_sync_time =
+          row[4].is_null() ? "" : row[4].as<std::string>();
+      std::string last_sync_column =
+          row[5].is_null() ? "" : row[5].as<std::string>();
+
+      auto mariadbConn = cm.connectMariaDB(connection_string);
+      if (!mariadbConn) {
+        std::cerr << "[ERROR] No se pudo conectar a MariaDB cluster "
+                  << cluster_name << std::endl;
+        continue;
+      }
+
+      // Obtener columnas de la tabla
+      auto columnsRes = cm.executeQueryPostgres(
+          *pgConn,
+          "SELECT column_name, data_type FROM information_schema.columns "
+          "WHERE table_schema='" +
+              schema_name + "' AND table_name='" + table_name + "';");
+
+      if (columnsRes.empty()) {
+        std::cerr << "[WARN] No se encontraron columnas para " << schema_name
+                  << "." << table_name << std::endl;
+        continue;
+      }
+
+      std::vector<std::string> columnNames;
+      for (const auto &col : columnsRes) {
+        columnNames.push_back(col[0].as<std::string>());
+      }
+
+      // Construir SELECT
+      std::string selectQuery =
+          "SELECT * FROM \"" + schema_name + "\".\"" + table_name + "\"";
+      if (!last_sync_column.empty() && !last_sync_time.empty()) {
+        selectQuery +=
+            " WHERE \"" + last_sync_column + "\" > '" + last_sync_time + "'";
+      }
+
+      auto results = cm.executeQueryPostgres(*pgConn, selectQuery);
+      size_t rowsTransferred = results.size();
+
+      if (rowsTransferred == 0) {
+        std::cout << "[INFO] No hay nuevas filas para " << schema_name << "."
+                  << table_name << std::endl;
+        continue;
+      }
+
+      // Construir INSERT en MariaDB
+      std::string insertQuery =
+          "INSERT INTO `" + schema_name + "`.`" + table_name + "` (";
+      for (size_t i = 0; i < columnNames.size(); ++i) {
+        insertQuery += "`" + columnNames[i] + "`";
+        if (i < columnNames.size() - 1)
+          insertQuery += ",";
+      }
+      insertQuery += ") VALUES ";
+
+      for (size_t i = 0; i < results.size(); ++i) {
+        insertQuery += "(";
+        for (size_t j = 0; j < columnNames.size(); ++j) {
+          insertQuery += "'" + cm.escapeSQL(results[i][j].c_str()) + "'";
+          if (j < columnNames.size() - 1)
+            insertQuery += ",";
+        }
+        insertQuery += ")";
+        if (i < results.size() - 1)
+          insertQuery += ",";
+      }
+      insertQuery += ";";
+
+      try {
+        cm.executeQueryMariaDB(mariadbConn.get(), insertQuery);
+
+        // Actualizar metadata según si hay columna de control
+        if (last_sync_column.empty()) {
+          cm.executeQueryPostgres(
+              *pgConn,
+              "UPDATE metadata.catalog SET last_refresh=NOW(), last_offset=" +
+                  std::to_string(rowsTransferred) +
+                  ", status='PERFECT MATCH' WHERE schema_name='" + schema_name +
+                  "' AND table_name='" + table_name + "';");
+        } else {
+          cm.executeQueryPostgres(
+              *pgConn,
+              "UPDATE metadata.catalog SET last_sync_time=NOW(), last_offset=" +
+                  std::to_string(rowsTransferred) +
+                  ", status='delta' WHERE schema_name='" + schema_name +
+                  "' AND table_name='" + table_name + "';");
+        }
+
+        std::cout << "[INFO] Transferido " << rowsTransferred << " filas de "
+                  << schema_name << "." << table_name << " a MariaDB"
+                  << std::endl;
+      } catch (const std::exception &e) {
+        std::cerr << "[ERROR] Transferencia fallida para " << schema_name << "."
+                  << table_name << ": " << e.what() << std::endl;
+      }
+    }
+  }
+
+  void run() {
     int minutes_counter = 0;
 
+    // Full load inicial MariaDB → Postgres
+    std::cout << "[INFO] Inicializando full load MariaDB → Postgres..."
+              << std::endl;
+    syncCatalog();
+    setupTableTarget();
+    transferData();
+
+    // Full load inicial Postgres → MariaDB
+    std::cout << "[INFO] Inicializando full load Postgres → MariaDB..."
+              << std::endl;
+    syncCatalogPostgresToMariaDB();
+    setupTableTargetPostgresToMariaDB();
+    transferDataPostgresToMariaDB();
+
     while (true) {
-      std::cout << "[INFO] Iniciando delta load..." << std::endl;
-      transferData(); // Delta load automático basado en last_offset /
-                      // last_sync_column
+      std::cout << "[INFO] Iniciando delta load MariaDB → Postgres..."
+                << std::endl;
+      transferData();
+
+      std::cout << "[INFO] Iniciando delta load Postgres → MariaDB..."
+                << std::endl;
+      transferDataPostgresToMariaDB();
 
       // Cada hora, revisar nuevas tablas/clusters
       minutes_counter += 5;
       if (minutes_counter >= 60) {
-        std::cout << "[INFO] Revisando nuevas tablas/clusters..." << std::endl;
+        std::cout
+            << "[INFO] Revisando nuevas tablas/clusters MariaDB → Postgres..."
+            << std::endl;
         syncCatalog();
         setupTableTarget();
+
+        std::cout
+            << "[INFO] Revisando nuevas tablas/clusters Postgres → MariaDB..."
+            << std::endl;
+        syncCatalogPostgresToMariaDB();
+
         minutes_counter = 0;
       }
 
-      std::cout << "[INFO] Pausando 5 minutos antes de siguiente delta load..."
-                << std::endl;
-      std::this_thread::sleep_for(std::chrono::minutes(5));
+      // Barra de progreso unicode mientras espera 5 minutos
+      std::cout
+          << "[INFO] Pausando 5 minutos antes del siguiente delta load... ";
+      const int total = 30; // 30 pasos = 5 minutos / 10 segundos
+      for (int i = 0; i <= total; ++i) {
+        int progress = (i * 20) / total; // barra de 20 bloques
+        std::cout << "\r[";
+        for (int j = 0; j < 20; ++j) {
+          if (j < progress)
+            std::cout << "█";
+          else
+            std::cout << " ";
+        }
+        std::cout << "] " << (i * 100 / total) << "%";
+        std::cout.flush();
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+      }
+      std::cout << std::endl;
     }
   }
 };
