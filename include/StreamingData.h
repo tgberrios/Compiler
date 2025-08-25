@@ -282,10 +282,12 @@ public:
         if (!mariadbConn) {
           std::cerr << "Error conectando a MariaDB en cluster "
                     << table.cluster_name << std::endl;
+          updateStatus(*pgConn, schema_name, table_name, "error");
           continue;
         }
       } else {
         std::cerr << "DB Engine no soportado: " << table.db_engine << std::endl;
+        updateStatus(*pgConn, schema_name, table_name, "error");
         continue;
       }
 
@@ -303,6 +305,8 @@ public:
           std::stoul(table.last_offset) == sourceCount) {
         std::cout << "Table " << schema_name << "." << table_name
                   << " is PERFECT MATCH. Skipping." << std::endl;
+        updateStatus(*pgConn, schema_name, table_name, "PERFECT MATCH",
+                     sourceCount);
         continue;
       }
 
@@ -316,6 +320,7 @@ public:
       if (columns.empty()) {
         std::cout << "No columns found for table " << schema_name << "."
                   << table_name << ", skipping." << std::endl;
+        updateStatus(*pgConn, schema_name, table_name, "error");
         continue;
       }
 
@@ -337,19 +342,8 @@ public:
       if (results.empty()) {
         std::cout << "No new/updated data in table " << schema_name << "."
                   << table_name << ", skipping." << std::endl;
-
-        // Actualizamos last_offset si aún no coincide
-        try {
-          pqxx::work txn(*pgConn);
-          txn.exec("UPDATE metadata.catalog SET last_offset=$1, "
-                   "status='PERFECT MATCH' "
-                   "WHERE schema_name=$2 AND table_name=$3;",
-                   pqxx::params(sourceCount, schema_name, table_name));
-          txn.commit();
-        } catch (const std::exception &e) {
-          std::cerr << "Error updating catalog for " << schema_name << "."
-                    << table_name << ": " << e.what() << std::endl;
-        }
+        updateStatus(*pgConn, schema_name, table_name, "PERFECT MATCH",
+                     sourceCount);
         continue;
       }
 
@@ -367,7 +361,7 @@ public:
             columnsStr += ",";
         }
 
-        // Usar factory raw_table para evitar deprecated
+        // Usar factory raw_table
         pqxx::stream_to stream = pqxx::stream_to::raw_table(
             txn, "\"" + lowerSchemaName + "\".\"" + table_name + "\"",
             columnsStr);
@@ -409,7 +403,24 @@ public:
       } catch (const std::exception &e) {
         std::cerr << "Error transferring table " << lowerSchemaName << "."
                   << table_name << ": " << e.what() << std::endl;
+        updateStatus(*pgConn, schema_name, table_name, "error");
       }
+    }
+  }
+
+  // Función auxiliar para actualizar status de manera segura
+  void updateStatus(pqxx::connection &pgConn, const std::string &schema,
+                    const std::string &table, const std::string &status,
+                    size_t lastOffset = 0) {
+    try {
+      pqxx::work txn(pgConn);
+      txn.exec("UPDATE metadata.catalog SET status=$1, last_offset=$2 "
+               "WHERE schema_name=$3 AND table_name=$4;",
+               pqxx::params(status, lastOffset, schema, table));
+      txn.commit();
+    } catch (const std::exception &e) {
+      std::cerr << "[ERROR] Failed to update status for " << schema << "."
+                << table << ": " << e.what() << std::endl;
     }
   }
 
