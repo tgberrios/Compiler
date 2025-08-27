@@ -119,7 +119,7 @@ public:
       pqxx::work txn(conn);
       pqxx::result res = txn.exec(query);
       txn.commit();
-      std::cout << "[INFO] Query: " << query << std::endl;
+      // std::cout << "[INFO] Query: " << query << std::endl;
       return res;
     } catch (const std::exception &e) {
       std::cerr << "Query execution failed: " << e.what() << std::endl;
