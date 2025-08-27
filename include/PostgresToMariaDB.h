@@ -63,6 +63,105 @@ public:
     return data;
   }
 
+  std::string sanitizeColumnName(const std::string &columnName) {
+    std::string sanitized = columnName;
+    std::transform(sanitized.begin(), sanitized.end(), sanitized.begin(),
+                   ::tolower);
+
+    if (sanitized == "id") {
+      return "id_column";
+    }
+
+    return sanitized;
+  }
+
+  std::vector<std::string> getPrimaryKeyColumns(const std::string &schema_name,
+                                                const std::string &table_name,
+                                                pqxx::connection &pgConn) {
+    ConnectionManager cm;
+    std::vector<std::string> primaryKeyColumns;
+
+    std::string obtainColumnsQuery =
+        "SELECT c.column_name "
+        "FROM information_schema.table_constraints tc "
+        "JOIN information_schema.key_column_usage kcu ON tc.constraint_name = "
+        "kcu.constraint_name "
+        "JOIN information_schema.columns c ON kcu.table_name = c.table_name "
+        "AND kcu.column_name = c.column_name "
+        "WHERE tc.constraint_type = 'PRIMARY KEY' "
+        "AND tc.table_schema = '" +
+        schema_name +
+        "' "
+        "AND tc.table_name = '" +
+        table_name +
+        "' "
+        "ORDER BY kcu.ordinal_position;";
+
+    auto columns = cm.executeQueryPostgres(pgConn, obtainColumnsQuery);
+
+    for (const auto &col : columns) {
+      if (col.size() < 1)
+        continue;
+
+      std::string colName = sanitizeColumnName(col[0].as<std::string>());
+      primaryKeyColumns.push_back(colName);
+    }
+
+    return primaryKeyColumns;
+  }
+
+  void syncIndexesAndConstraints(const std::string &schema_name,
+                                 const std::string &table_name,
+                                 pqxx::connection &pgConn, MYSQL *mariadbConn,
+                                 const std::string &lowerSchemaName) {
+    ConnectionManager cm;
+
+    std::string indexQuery = "SELECT indexname, indexdef "
+                             "FROM pg_indexes "
+                             "WHERE schemaname = '" +
+                             schema_name + "' AND tablename = '" + table_name +
+                             "';";
+
+    auto indexes = cm.executeQueryPostgres(pgConn, indexQuery);
+
+    for (const auto &row : indexes) {
+      if (row.size() < 2)
+        continue;
+
+      std::string indexName = row[0].as<std::string>();
+      std::string indexDef = row[1].as<std::string>();
+
+      if (indexName.find("_pkey") != std::string::npos) {
+        continue;
+      }
+
+      std::string adaptedIndexDef = indexDef;
+
+      size_t pos = 0;
+      while ((pos = adaptedIndexDef.find(
+                  "\"" + schema_name + "\".\"" + table_name + "\"", pos)) !=
+             std::string::npos) {
+        adaptedIndexDef.replace(
+            pos, schema_name.length() + table_name.length() + 4,
+            "`" + lowerSchemaName + "`.`" + table_name + "`");
+        pos += lowerSchemaName.length() + table_name.length() + 4;
+      }
+
+      while ((pos = adaptedIndexDef.find("\"", pos)) != std::string::npos) {
+        adaptedIndexDef.replace(pos, 1, "`");
+        pos += 1;
+      }
+
+      try {
+        cm.executeQueryMariaDB(mariadbConn, adaptedIndexDef);
+        std::cout << "  ✓ Index '" + indexName + "' created" << std::endl;
+      } catch (const std::exception &e) {
+        std::cerr << "  ✗ Error creating index '" + indexName + "': "
+                  << e.what() << std::endl;
+      }
+    }
+  }
+
   void syncCatalogPostgresToMariaDB() {
     ConnectionManager cm;
 
@@ -70,7 +169,8 @@ public:
                                      "user=tomy.berrios password=Yucaquemada1");
 
     static const std::vector<std::string> dateCandidates = {
-        "updated_at", "created_at", "fecha_actualizacion", "fecha_creacion"};
+        "updated_at",     "created_at",  "fecha_actualizacion",
+        "fecha_creacion", "modified_at", "changed_at"};
 
     auto tables = cm.executeQueryPostgres(
         *pgConn, "SELECT schema_name, table_name, replicate_to_mariadb, "
@@ -91,10 +191,6 @@ public:
           row[3].is_null() ? "" : row[3].as<std::string>();
 
       if (!replicateToMariaDB || mariadbConnectionString.empty()) {
-               // std::cout << "[INFO] Skipping table " << schema_name << "."
-       //           << table_name
-       //           << " (replicate_to_mariadb=FALSE or no connection_string)"
-       //           << std::endl;
         continue;
       }
 
@@ -105,16 +201,44 @@ public:
                        schema_name + "' AND table_name='" + table_name + "';");
 
       std::string lastSyncColumn;
+      std::vector<std::string> foundTimestampColumns;
+
       for (const auto &col : columns) {
         std::string colName = col[0].as<std::string>();
-        for (const auto &candidate : dateCandidates) {
-          if (colName == candidate) {
-            lastSyncColumn = colName;
-            break;
-          }
-        }
-        if (!lastSyncColumn.empty())
+
+        if (colName == "updated_at") {
+          lastSyncColumn = colName;
           break;
+        }
+
+        if (colName == "created_at") {
+          foundTimestampColumns.push_back(colName);
+        }
+
+        if (colName == "fecha_actualizacion") {
+          foundTimestampColumns.push_back(colName);
+        }
+
+        if (colName == "fecha_creacion") {
+          foundTimestampColumns.push_back(colName);
+        }
+
+        if (colName == "modified_at") {
+          foundTimestampColumns.push_back(colName);
+        }
+
+        if (colName == "changed_at") {
+          foundTimestampColumns.push_back(colName);
+        }
+
+        if (colName.length() > 3 &&
+            colName.substr(colName.length() - 3) == "_at") {
+          foundTimestampColumns.push_back(colName);
+        }
+      }
+
+      if (lastSyncColumn.empty() && !foundTimestampColumns.empty()) {
+        lastSyncColumn = foundTimestampColumns[0];
       }
 
       try {
@@ -183,8 +307,6 @@ public:
                                  table_name + "';");
 
       if (!existsRes.empty() && existsRes[0][0] != "0") {
-               // std::cout << "[INFO] Tabla " << schema_name << "." << table_name
-       //           << " ya existe en MariaDB. Skipping creation." << std::endl;
         continue;
       }
 
@@ -218,7 +340,7 @@ public:
       std::string createQuery =
           "CREATE TABLE `" + schema_name + "`.`" + table_name + "` (";
       for (const auto &col : columns) {
-        std::string name = col[0].as<std::string>();
+        std::string name = sanitizeColumnName(col[0].as<std::string>());
         std::string type = col[1].as<std::string>();
         std::string nullable =
             (col[2].as<std::string>() == "YES") ? "" : " NOT NULL";
@@ -234,6 +356,11 @@ public:
         cm.executeQueryMariaDB(mariadbConn.get(), createQuery);
         std::cout << "[INFO] Tabla creada en MariaDB: " << schema_name << "."
                   << table_name << std::endl;
+
+        std::cout << "  Syncing indexes and constraints..." << std::endl;
+        syncIndexesAndConstraints(schema_name, table_name, *pgConn,
+                                  mariadbConn.get(), schema_name);
+
       } catch (const std::exception &e) {
         std::cerr << "[ERROR] No se pudo crear la tabla " << schema_name << "."
                   << table_name << ": " << e.what() << std::endl;
@@ -278,7 +405,7 @@ public:
 
       std::vector<std::string> columnNames;
       for (const auto &col : columnsRes) {
-        columnNames.push_back(col[0].as<std::string>());
+        columnNames.push_back(sanitizeColumnName(col[0].as<std::string>()));
       }
 
       std::string selectQuery =
@@ -298,31 +425,106 @@ public:
         continue;
       }
 
-      std::string insertQuery =
-          "INSERT INTO `" + schema_name + "`.`" + table_name + "` (";
-      for (size_t i = 0; i < columnNames.size(); ++i) {
-        insertQuery += "`" + columnNames[i] + "`";
-        if (i < columnNames.size() - 1)
-          insertQuery += ",";
-      }
-      insertQuery += ") VALUES ";
-
-      for (size_t i = 0; i < results.size(); ++i) {
-        insertQuery += "(";
-        for (size_t j = 0; j < columnNames.size(); ++j) {
-          insertQuery +=
-              "'" + cm.escapeSQL(results[i][j].as<std::string>().c_str()) + "'";
-          if (j < columnNames.size() - 1)
-            insertQuery += ",";
-        }
-        insertQuery += ")";
-        if (i < results.size() - 1)
-          insertQuery += ",";
-      }
-      insertQuery += ";";
-
       try {
-        cm.executeQueryMariaDB(mariadbConn.get(), insertQuery);
+        auto primaryKeyColumns =
+            getPrimaryKeyColumns(schema_name, table_name, *pgConn);
+
+        if (primaryKeyColumns.empty()) {
+          std::string insertQuery =
+              "INSERT INTO `" + schema_name + "`.`" + table_name + "` (";
+          for (size_t i = 0; i < columnNames.size(); ++i) {
+            insertQuery += "`" + columnNames[i] + "`";
+            if (i < columnNames.size() - 1)
+              insertQuery += ",";
+          }
+          insertQuery += ") VALUES ";
+
+          for (size_t i = 0; i < results.size(); ++i) {
+            insertQuery += "(";
+            for (size_t j = 0; j < columnNames.size(); ++j) {
+              insertQuery +=
+                  "'" + cm.escapeSQL(results[i][j].as<std::string>().c_str()) +
+                  "'";
+              if (j < columnNames.size() - 1)
+                insertQuery += ",";
+            }
+            insertQuery += ")";
+            if (i < results.size() - 1)
+              insertQuery += ",";
+          }
+          insertQuery += ";";
+
+          cm.executeQueryMariaDB(mariadbConn.get(), insertQuery);
+        } else {
+          std::string upsertQuery =
+              "INSERT INTO `" + schema_name + "`.`" + table_name + "` (";
+          for (size_t i = 0; i < columnNames.size(); ++i) {
+            upsertQuery += "`" + columnNames[i] + "`";
+            if (i < columnNames.size() - 1)
+              upsertQuery += ",";
+          }
+          upsertQuery += ") VALUES ";
+
+          for (size_t i = 0; i < results.size(); ++i) {
+            upsertQuery += "(";
+            for (size_t j = 0; j < columnNames.size(); ++j) {
+              upsertQuery +=
+                  "'" + cm.escapeSQL(results[i][j].as<std::string>().c_str()) +
+                  "'";
+              if (j < columnNames.size() - 1)
+                upsertQuery += ",";
+            }
+            upsertQuery += ")";
+            if (i < results.size() - 1)
+              upsertQuery += ",";
+          }
+
+          std::string conflictColumns = "";
+          for (const auto &pkCol : primaryKeyColumns) {
+            if (!conflictColumns.empty())
+              conflictColumns += ", ";
+            conflictColumns += "`" + pkCol + "`";
+          }
+
+          upsertQuery += " ON DUPLICATE KEY UPDATE ";
+
+          for (size_t i = 0; i < columnNames.size(); ++i) {
+            bool isPrimaryKey = false;
+            for (const auto &pkCol : primaryKeyColumns) {
+              if (columnNames[i] == pkCol) {
+                isPrimaryKey = true;
+                break;
+              }
+            }
+
+            if (!isPrimaryKey) {
+              upsertQuery +=
+                  "`" + columnNames[i] + "` = VALUES(`" + columnNames[i] + "`)";
+
+              bool hasMoreNonPK = false;
+              for (size_t j = i + 1; j < columnNames.size(); ++j) {
+                bool isNextPK = false;
+                for (const auto &pkCol : primaryKeyColumns) {
+                  if (columnNames[j] == pkCol) {
+                    isNextPK = true;
+                    break;
+                  }
+                }
+                if (!isNextPK) {
+                  hasMoreNonPK = true;
+                  break;
+                }
+              }
+              if (hasMoreNonPK) {
+                upsertQuery += ", ";
+              }
+            }
+          }
+
+          upsertQuery += ";";
+
+          cm.executeQueryMariaDB(mariadbConn.get(), upsertQuery);
+        }
 
         if (last_sync_column.empty()) {
           cm.executeQueryPostgres(
@@ -336,13 +538,14 @@ public:
               *pgConn,
               "UPDATE metadata.catalog SET last_sync_time=NOW(), last_offset=" +
                   std::to_string(rowsTransferred) +
-                  ", status='delta' WHERE schema_name='" + schema_name +
-                  "' AND table_name='" + table_name + "';");
+                  ", status='LISTENING_CHANGES' WHERE schema_name='" +
+                  schema_name + "' AND table_name='" + table_name + "';");
         }
 
-               // std::cout << "[INFO] Transferido " << rowsTransferred << " filas de "
-       //           << schema_name << "." << table_name << " a MariaDB"
-       //           << std::endl;
+        std::cout << "[INFO] Transferido " << rowsTransferred << " filas de "
+                  << schema_name << "." << table_name << " a MariaDB"
+                  << std::endl;
+
       } catch (const std::exception &e) {
         std::cerr << "[ERROR] Transferencia fallida para " << schema_name << "."
                   << table_name << ": " << e.what() << std::endl;
