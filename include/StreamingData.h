@@ -3,6 +3,7 @@
 
 #include "MariaDBToPostgres.h"
 #include "PostgresToMariaDB.h"
+#include "SyncReporter.h"
 #include <chrono>
 #include <iostream>
 #include <thread>

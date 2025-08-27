@@ -2,6 +2,7 @@
 #define POSTGRESTOMARIADB_H
 
 #include "ConnectionManager.h"
+#include "SyncReporter.h"
 #include <algorithm>
 #include <iostream>
 #include <pqxx/pqxx>
@@ -420,8 +421,7 @@ public:
       size_t rowsTransferred = results.size();
 
       if (rowsTransferred == 0) {
-        std::cout << "[INFO] No hay nuevas filas para " << schema_name << "."
-                  << table_name << std::endl;
+
         continue;
       }
 
@@ -542,9 +542,7 @@ public:
                   schema_name + "' AND table_name='" + table_name + "';");
         }
 
-        std::cout << "[INFO] Transferido " << rowsTransferred << " filas de "
-                  << schema_name << "." << table_name << " a MariaDB"
-                  << std::endl;
+
 
       } catch (const std::exception &e) {
         std::cerr << "[ERROR] Transferencia fallida para " << schema_name << "."

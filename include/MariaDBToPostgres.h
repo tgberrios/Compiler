@@ -2,6 +2,7 @@
 #define MARIADBTOPOSTGRES_H
 
 #include "ConnectionManager.h"
+#include "SyncReporter.h"
 #include <algorithm>
 #include <atomic>
 #include <iostream>
@@ -1303,26 +1304,9 @@ public:
       }
     }
 
-    // Final summary - count tables by status
-    size_t perfectMatchCount = 0;
-    size_t listeningChangesCount = 0;
-
-    for (const auto &table : tables) {
-      if (table.status == "PERFECT MATCH") {
-        perfectMatchCount++;
-      } else if (table.status == "LISTENING_CHANGES") {
-        listeningChangesCount++;
-      }
-    }
-
-    std::cout << "\n\u25A0 Synchronization Summary:" << std::endl;
-    std::cout << "   Total tables: " << totalTables << std::endl;
-    std::cout << "   Skipped (already synced): " << skippedTables << std::endl;
-    std::cout << "   PERFECT_MATCH: " << perfectMatchCount << std::endl;
-    std::cout << "   LISTENING_CHANGES: " << listeningChangesCount << std::endl;
-    std::cout << "   Total synchronized: "
-              << (perfectMatchCount + listeningChangesCount) << "/"
-              << totalTables << " completed" << std::endl;
+    // Generate comprehensive sync report using SyncReporter
+    SyncReporter reporter;
+    reporter.generateFullReport(*pgConn);
 
     if (shutdownRequested) {
       std::cout << "\nGraceful shutdown completed. Exiting..." << std::endl;
