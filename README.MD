@@ -274,3 +274,52 @@ For support and questions:
 - ✅ **Production-tested** synchronization logic
 
 **Ready for enterprise deployment!** 🚀✨
+
+export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH && g++ -std=c++17 -I./include -I/usr/local/include -I/usr/include/mariadb -I/usr/include/mariadb/mysql src/main.cpp -lmariadb -lpqxx -lpq -lpthread -L/usr/local/lib -L/usr/lib64 -o DataSync
+
+localhost:1433;sa;Yucaquemada1;TestSync
+localhost:1433;sa;Yucaquemada1;TestSync
+host=127.0.0.1;port=3306;user=root;password=Yucaquemada1;db=SportBook;charset=utf8
+host=127.0.0.1;port=3306;user=root;password=Yucaquemada1;db=SportBook;charset=utf8
+localhost:1433;sa;Yucaquemada1;TestSync
+localhost:1433;sa;Yucaquemada1;TestSync
+localhost:1433;sa;Yucaquemada1;TestSync
+localhost:1433;sa;Yucaquemada1;TestSync
+host=127.0.0.1;port=3306;user=root;password=Yucaquemada1;db=SportBook;charset=utf8
+host=127.0.0.1;port=3306;user=root;password=Yucaquemada1;db=SportBook;charset=utf8
+host=127.0.0.1;port=3306;user=root;password=Yucaquemada1;db=SportBook;charset=utf8
+host=127.0.0.1;port=3306;user=root;password=Yucaquemada1;db=SportBook;charset=utf8
+host=127.0.0.1;port=3306;user=root;password=Yucaquemada1;db=SportBook;charset=utf8
+localhost:3306;root;Yucaquemada1;test_sync
+localhost:3306;root;Yucaquemada1;test_sync
+localhost:3306;root;Yucaquemada1;test_sync
+localhost:3306;root;Yucaquemada1;test_sync
+host=127.0.0.1;port=3306;user=root;password=Yucaquemada1;db=SportBook;charset=utf8
+localhost:1433;sa;Yucaquemada1;TestSync
+localhost:1433;sa;Yucaquemada1;TestSync
+localhost:1433;sa;Yucaquemada1;TestSync
+
+-- metadata."catalog" definition
+
+-- Drop table
+
+-- DROP TABLE metadata."catalog";
+
+CREATE TABLE metadata."catalog" (
+schema_name varchar NOT NULL,
+table_name varchar NOT NULL,
+db_engine varchar NULL,
+active varchar(255) NULL,
+last_refresh varchar(255) NULL,
+last_sync_time varchar NULL,
+cluster_name varchar NULL,
+connection_string varchar NULL,
+last_offset int4 NULL,
+status varchar NULL,
+last_sync_column varchar NULL,
+replicate_to_mariadb bool DEFAULT false NULL,
+replicate_to_mssql bool DEFAULT false NULL,
+replicate_to_mongo bool DEFAULT false NULL,
+CONSTRAINT catalog_pkey PRIMARY KEY (schema_name, table_name),
+CONSTRAINT catalog_unique UNIQUE (schema_name, table_name, db_engine)
+);

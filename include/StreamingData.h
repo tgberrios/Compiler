@@ -1,6 +1,7 @@
 #ifndef STREAMINGDATA_H
 #define STREAMINGDATA_H
 
+#include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
 #include "PostgresToMariaDB.h"
 #include "SyncReporter.h"
@@ -16,6 +17,7 @@ public:
   void run() {
     MariaDBToPostgres mariaToPg;
     PostgresToMariaDB pgToMaria;
+    MSSQLToPostgres mssqlToPg;
 
     int minutes_counter = 0;
 
@@ -27,10 +29,16 @@ public:
     pgToMaria.setupTableTargetPostgresToMariaDB();
     pgToMaria.transferDataPostgresToMariaDB();
 
+    mssqlToPg.syncCatalogMSSQLToPostgres();
+    mssqlToPg.setupTableTargetMSSQLToPostgres();
+    mssqlToPg.transferDataMSSQLToPostgres();
+
     while (true) {
       mariaToPg.transferDataMariaDBToPostgres();
 
       pgToMaria.transferDataPostgresToMariaDB();
+
+      mssqlToPg.transferDataMSSQLToPostgres();
 
       minutes_counter += 1;
       if (minutes_counter >= 2) {
@@ -38,6 +46,8 @@ public:
         mariaToPg.setupTableTargetMariaDBToPostgres();
 
         // pgToMaria.syncCatalogPostgresToMariaDB();
+
+        mssqlToPg.setupTableTargetMSSQLToPostgres();
 
         minutes_counter = 0;
       }

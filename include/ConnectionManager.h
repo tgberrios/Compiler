@@ -6,9 +6,33 @@
 #include <memory>
 #include <mysql/mysql.h>
 #include <pqxx/pqxx>
+#include <sql.h>
+#include <sqlext.h>
 #include <sstream>
 #include <string>
 #include <vector>
+
+class MSSQLConnection {
+private:
+  std::string host;
+  std::string port;
+  std::string user;
+  std::string password;
+  std::string database;
+
+public:
+  MSSQLConnection(const std::string &h, const std::string &p,
+                  const std::string &u, const std::string &pass,
+                  const std::string &db)
+      : host(h), port(p), user(u), password(pass), database(db) {}
+  ~MSSQLConnection() = default;
+
+  std::string getHost() const { return host; }
+  std::string getPort() const { return port; }
+  std::string getUser() const { return user; }
+  std::string getPassword() const { return password; }
+  std::string getDatabase() const { return database; }
+};
 
 class ConnectionManager {
 public:
@@ -124,6 +148,111 @@ public:
     } catch (const std::exception &e) {
       std::cerr << "Query execution failed: " << e.what() << std::endl;
       throw;
+    }
+  }
+
+  std::shared_ptr<MSSQLConnection> connectMSSQL(const std::string &connStr) {
+    try {
+      std::string host, user, password, db, port;
+      std::istringstream ss(connStr);
+      std::string token;
+      int tokenIndex = 0;
+      while (std::getline(ss, token, ';')) {
+        if (tokenIndex == 0) {
+          auto colonPos = token.find(':');
+          if (colonPos != std::string::npos) {
+            host = token.substr(0, colonPos);
+            port = token.substr(colonPos + 1);
+          } else {
+            host = token;
+            port = "1433";
+          }
+        } else if (tokenIndex == 1) {
+          user = token;
+        } else if (tokenIndex == 2) {
+          password = token;
+        } else if (tokenIndex == 3) {
+          db = token;
+        }
+        tokenIndex++;
+      }
+
+      if (port.empty()) {
+        port = "1433";
+      }
+
+      auto conn =
+          std::make_shared<MSSQLConnection>(host, port, user, password, db);
+      return conn;
+    } catch (const std::exception &e) {
+      std::cerr << "MSSQL connection failed: " << e.what() << std::endl;
+      return nullptr;
+    }
+  }
+
+  std::vector<std::vector<std::string>>
+  executeQueryMSSQL(MSSQLConnection *conn, const std::string &query) {
+    std::vector<std::vector<std::string>> results;
+    if (!conn) {
+      std::cerr << "No valid MSSQL connection" << std::endl;
+      return results;
+    }
+
+    try {
+      std::string sqlcmdCmd =
+          "sqlcmd -S " + conn->getHost() + "," + conn->getPort() + " -U " +
+          conn->getUser() + " -P " + conn->getPassword() + " -d " +
+          conn->getDatabase() + " -C -h -1 -W -r -Q \"" + query + "\"";
+
+      FILE *pipe = popen(sqlcmdCmd.c_str(), "r");
+      if (!pipe) {
+        std::cerr << "Failed to execute sqlcmd command" << std::endl;
+        return results;
+      }
+
+      char buffer[4096];
+      std::string result;
+      while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        result += buffer;
+      }
+      pclose(pipe);
+
+
+
+      std::istringstream iss(result);
+      std::string line;
+
+      while (std::getline(iss, line)) {
+        if (line.find("rows affected") != std::string::npos) {
+          break;
+        }
+
+        if (!line.empty() && line.find("---") == std::string::npos &&
+            line.find("rows affected") == std::string::npos) {
+          std::vector<std::string> row;
+          std::istringstream lineStream(line);
+          std::string cell;
+
+          while (std::getline(lineStream, cell, ' ')) {
+            if (!cell.empty()) {
+              cell.erase(0, cell.find_first_not_of(" \t"));
+              cell.erase(cell.find_last_not_of(" \t") + 1);
+              if (!cell.empty()) {
+                row.push_back(cell);
+              }
+            }
+          }
+
+          if (!row.empty() && row.size() >= 6) {
+            results.push_back(row);
+          }
+        }
+      }
+
+      return results;
+    } catch (const std::exception &e) {
+      std::cerr << "MSSQL query execution failed: " << e.what() << std::endl;
+      return results;
     }
   }
 };
