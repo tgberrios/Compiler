@@ -37,7 +37,7 @@ public:
                 "connection_string, last_sync_time, last_sync_column, "
                 "status, last_offset "
                 "FROM metadata.catalog "
-                "WHERE active='YES' AND db_engine='Postgres' AND "
+                "WHERE active=true AND db_engine='Postgres' AND "
                 "replicate_to_mariadb=TRUE "
                 "ORDER BY schema_name, table_name;");
 
@@ -166,8 +166,9 @@ public:
   void syncCatalogPostgresToMariaDB() {
     ConnectionManager cm;
 
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
 
     static const std::vector<std::string> dateCandidates = {
         "updated_at",     "created_at",  "fecha_actualizacion",
@@ -177,7 +178,7 @@ public:
         *pgConn, "SELECT schema_name, table_name, replicate_to_mariadb, "
                  "connection_string "
                  "FROM metadata.catalog "
-                 "WHERE active='YES' AND db_engine='Postgres';");
+                 "WHERE active=true AND db_engine='Postgres';");
 
     for (const auto &row : tables) {
       if (row.size() < 4)
@@ -260,7 +261,7 @@ public:
             "replicate_to_mariadb = EXCLUDED.replicate_to_mariadb, "
             "connection_string = EXCLUDED.connection_string, "
             "cluster_name = EXCLUDED.cluster_name;",
-            schema_name, table_name, "Postgres", "YES", 0, "full_load",
+            schema_name, table_name, "Postgres", true, 0, "full_load",
             lastSyncColumn, true, mariadbConnectionString, "DataLake");
 
         txn.commit();
@@ -279,8 +280,9 @@ public:
 
   void setupTableTargetPostgresToMariaDB() {
     ConnectionManager cm;
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
 
     auto tables = getActiveTables(*pgConn);
 
@@ -371,8 +373,9 @@ public:
 
   void transferDataPostgresToMariaDB() {
     ConnectionManager cm;
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
 
     const size_t CHUNK_SIZE = 1000;
     auto tables = getActiveTables(*pgConn);
@@ -541,8 +544,6 @@ public:
                   ", status='LISTENING_CHANGES' WHERE schema_name='" +
                   schema_name + "' AND table_name='" + table_name + "';");
         }
-
-
 
       } catch (const std::exception &e) {
         std::cerr << "[ERROR] Transferencia fallida para " << schema_name << "."

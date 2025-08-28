@@ -56,13 +56,14 @@ public:
   void syncCatalogMariaDBToPostgres() {
     ConnectionManager cm;
 
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
 
     std::vector<std::string> mariaConnStrings;
     auto results = cm.executeQueryPostgres(
         *pgConn, "SELECT connection_string FROM metadata.catalog "
-                 "WHERE db_engine='MariaDB' AND active='YES';");
+                 "WHERE db_engine='MariaDB' AND active=true;");
     for (const auto &row : results) {
       if (row.size() >= 1) {
         try {
@@ -161,7 +162,7 @@ public:
                 "connection_string, last_sync_time, last_sync_column, "
                 "status, last_offset "
                 "FROM metadata.catalog "
-                "WHERE active='YES' AND db_engine='MariaDB' "
+                "WHERE active=true AND db_engine='MariaDB' "
                 "ORDER BY schema_name, table_name;");
 
     for (const auto &row : results) {
@@ -338,8 +339,9 @@ public:
   void setupTableTargetMariaDBToPostgres() {
     ConnectionManager cm;
 
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
 
     auto tables = getActiveTables(*pgConn);
 
@@ -453,8 +455,9 @@ public:
     signal(SIGTERM, signalHandler);
 
     ConnectionManager cm;
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
 
     auto tables = getActiveTables(*pgConn);
     size_t totalTables = tables.size();

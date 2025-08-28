@@ -40,7 +40,7 @@ public:
         pgConn,
         "SELECT schema_name, table_name, db_engine, status, last_offset "
         "FROM metadata.catalog "
-        "WHERE active='YES' "
+        "WHERE active=true "
         "ORDER BY db_engine, schema_name, table_name;");
 
     for (const auto &row : results) {

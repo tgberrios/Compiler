@@ -57,8 +57,9 @@ public:
   void syncCatalogMSSQLToPostgres() {
     ConnectionManager cm;
 
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
 
     static const std::vector<std::string> dateCandidates = {
         "updated_at",     "created_at",  "fecha_actualizacion",
@@ -67,7 +68,7 @@ public:
     std::vector<std::string> mssqlConnStrings;
     auto results = cm.executeQueryPostgres(
         *pgConn, "SELECT connection_string FROM metadata.catalog "
-                 "WHERE db_engine='MSSQL' AND active='YES';");
+                 "WHERE db_engine='MSSQL' AND active=true;");
     for (const auto &row : results) {
       if (row.size() >= 1) {
         try {
@@ -189,7 +190,7 @@ public:
                 "connection_string, last_sync_time, last_sync_column, "
                 "status, last_offset "
                 "FROM metadata.catalog "
-                "WHERE active='YES' AND db_engine='MSSQL' "
+                "WHERE active=true AND db_engine='MSSQL' "
                 "ORDER BY schema_name, table_name;");
 
     for (const auto &row : results) {
@@ -407,8 +408,9 @@ public:
   void setupTableTargetMSSQLToPostgres() {
     ConnectionManager cm;
 
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
     if (!pgConn) {
       return;
     }
@@ -690,8 +692,9 @@ public:
     signal(SIGTERM, MSSQLSync::signalHandler);
 
     ConnectionManager cm;
-    auto pgConn = cm.connectPostgres("host=localhost dbname=DataLake "
-                                     "user=tomy.berrios password=Yucaquemada1");
+    auto pgConn =
+        cm.connectPostgres("host=localhost dbname=DataLake "
+                           "user=Datalake_User password=keepprofessional");
 
     detectAndFixCorruptedSyncs(*pgConn);
     detectAndFixEmptyTargetTables(*pgConn);

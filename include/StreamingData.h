@@ -21,8 +21,8 @@ public:
     SyncReporter reporter;
 
     int minutes_counter = 0;
-    pqxx::connection pgConn("host=localhost user=tomy.berrios "
-                            "password=Yucaquemada1 dbname=DataLake");
+    pqxx::connection pgConn("host=localhost user=Datalake_User "
+                            "password=keepprofessional dbname=DataLake");
 
     std::cout << "Starting streaming data... :)" << std::endl;
 
