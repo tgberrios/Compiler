@@ -708,18 +708,15 @@ public:
               placeholders += ",";
           }
 
-          std::string upsertQuery;
-          if (primaryKeyColumns.empty()) {
-            std::cout << "[DEBUG] Table " << schema_name << "." << table_name
-                      << " has NO primary key, using simple INSERT"
-                      << std::endl;
-            upsertQuery = "INSERT INTO \"" + lowerSchemaName + "\".\"" +
-                          table_name + "\" (" + columnsStr + ") VALUES (" +
-                          placeholders + ")";
-          } else {
+          std::string upsertQuery = "INSERT INTO \"" + lowerSchemaName +
+                                    "\".\"" + table_name + "\" (" + columnsStr +
+                                    ") VALUES (" + placeholders + ")";
+
+          if (!primaryKeyColumns.empty()) {
             std::cout << "[DEBUG] Table " << schema_name << "." << table_name
                       << " has primary key, using UPSERT with ON CONFLICT"
                       << std::endl;
+
             std::string pkColumnsStr;
             for (size_t i = 0; i < primaryKeyColumns.size(); ++i) {
               if (i > 0)
@@ -727,18 +724,31 @@ public:
               pkColumnsStr += "\"" + primaryKeyColumns[i] + "\"";
             }
 
-            std::string updateStr;
-            for (size_t i = 0; i < columnNames.size(); ++i) {
-              if (i > 0)
-                updateStr += ", ";
-              updateStr += "\"" + columnNames[i] + "\" = EXCLUDED.\"" +
-                           columnNames[i] + "\"";
+            std::vector<std::string> nonPKColumns;
+            for (const auto &col : columnNames) {
+              if (std::find(primaryKeyColumns.begin(), primaryKeyColumns.end(),
+                            col) == primaryKeyColumns.end()) {
+                nonPKColumns.push_back(col);
+              }
             }
 
-            upsertQuery = "INSERT INTO \"" + lowerSchemaName + "\".\"" +
-                          table_name + "\" (" + columnsStr + ") VALUES (" +
-                          placeholders + ") ON CONFLICT (" + pkColumnsStr +
-                          ") DO UPDATE SET " + updateStr;
+            if (!nonPKColumns.empty()) {
+              std::string updateStr;
+              for (size_t i = 0; i < nonPKColumns.size(); ++i) {
+                if (i > 0)
+                  updateStr += ", ";
+                updateStr += "\"" + nonPKColumns[i] + "\" = EXCLUDED.\"" +
+                             nonPKColumns[i] + "\"";
+              }
+              upsertQuery += " ON CONFLICT (" + pkColumnsStr +
+                             ") DO UPDATE SET " + updateStr;
+            } else {
+              upsertQuery += " ON CONFLICT (" + pkColumnsStr + ") DO NOTHING";
+            }
+          } else {
+            std::cout << "[DEBUG] Table " << schema_name << "." << table_name
+                      << " has NO primary key, using simple INSERT"
+                      << std::endl;
           }
 
           size_t rowIndex = 0;
@@ -768,24 +778,26 @@ public:
                                    1);
 
                 if (value == "NULL" || value.empty() || trimmedValue.empty()) {
+                  std::string defaultValue;
                   if (columnType == "DATE" || columnType == "TIMESTAMP" ||
                       columnType == "TIME") {
-                    processedValues.push_back("1970-01-01");
+                    defaultValue = "1970-01-01";
                   } else if (columnType == "BOOLEAN") {
-                    processedValues.push_back("false");
+                    defaultValue = "false";
                   } else if (columnType == "BIT") {
-                    processedValues.push_back("B'0'");
+                    defaultValue = "B'0'";
                   } else if (columnType == "INTEGER" ||
                              columnType == "BIGINT" ||
                              columnType == "SMALLINT" || columnType == "REAL" ||
                              columnType == "DOUBLE PRECISION" ||
                              columnType == "NUMERIC") {
-                    processedValues.push_back("0");
+                    defaultValue = "0";
                   } else if (!columnNullable[i]) {
-                    processedValues.push_back("N/A");
+                    defaultValue = "N/A";
                   } else {
-                    processedValues.push_back("NULL");
+                    defaultValue = "NULL";
                   }
+                  processedValues.push_back(defaultValue);
 
                 } else {
                   std::string sanitizedValue = value;
@@ -818,6 +830,7 @@ public:
                     std::string lowerValue = sanitizedValue;
                     std::transform(lowerValue.begin(), lowerValue.end(),
                                    lowerValue.begin(), ::tolower);
+
                     if (lowerValue == "1" || lowerValue == "true" ||
                         lowerValue == "yes" || lowerValue == "on" ||
                         lowerValue == "t" || lowerValue == "y") {
