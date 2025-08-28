@@ -83,36 +83,54 @@ public:
 
   void printCompactReport(const std::vector<TableStatus> &tables,
                           const SyncStats &stats) {
-    std::cout << "\r\u25A0 Sync: " << stats.totalSynchronized << "/"
+    std::cout << "\r█ Sync: " << stats.totalSynchronized << "/"
               << stats.totalTables << " tables | ✓ " << stats.perfectMatchCount
-              << " | 🔄 " << stats.listeningChangesCount << " | ✗ "
-              << stats.errorCount << " | " << getCurrentTimestamp()
-              << std::flush;
+              << " | ▄ " << stats.listeningChangesCount << " | "
+              << getCurrentTimestamp() << std::flush;
+  }
+
+  void printDashboard(const std::vector<TableStatus> &tables,
+                      const SyncStats &stats) {
+    static int refreshCounter = 0;
+    refreshCounter++;
+    if (refreshCounter >= 120) {    // clear every ~120 prints
+      std::cout << "\033[2J\033[H"; // clear screen and move cursor home
+      refreshCounter = 0;
+    }
+    // Overall Progress Bar
+    double progress = (stats.totalTables > 0)
+                          ? static_cast<double>(stats.totalSynchronized) /
+                                static_cast<double>(stats.totalTables)
+                          : 0.0;
+    int progressPercent = static_cast<int>(progress * 100.0);
+    int progressBars = static_cast<int>(progress * 30.0); // 30 characters wide
+
+    std::cout << "\r\033[K█ DataSync | Progress: ";
+    for (int i = 0; i < 30; ++i) {
+      if (i < progressBars) {
+        std::cout << "█";
+      } else {
+        std::cout << "░";
+      }
+    }
+    std::cout << " " << progressPercent << "% | ";
+    std::cout << "█ Perfect: " << stats.perfectMatchCount << " | ";
+    std::cout << "█ Listening: " << stats.listeningChangesCount << " | ";
+    std::cout << "█ Time: " << getCurrentTimestamp() << std::flush;
   }
 
   void printFinalReport(const std::vector<TableStatus> &tables,
                         const SyncStats &stats) {
-    std::cout << "\n\n\u25A0 FINAL SYNC REPORT " << getCurrentTimestamp()
-              << std::endl;
-    std::cout << "=====================================" << std::endl;
+    std::cout << "\n\n█ FINAL SYNC REPORT " << getCurrentTimestamp() << "\n";
+    std::cout << "=====================================\n";
     std::cout << "Total: " << stats.totalTables
               << " | Synced: " << stats.totalSynchronized << " | Success: "
               << (stats.totalTables > 0
                       ? (stats.totalSynchronized * 100 / stats.totalTables)
                       : 0)
-              << "%" << std::endl;
+              << "%\n";
 
-    if (stats.errorCount > 0) {
-      std::cout << "\n\u26A0 Issues: ";
-      for (const auto &table : tables) {
-        if (table.status == "error") {
-          std::cout << table.schema_name << "." << table.table_name << " ";
-        }
-      }
-      std::cout << std::endl;
-    }
-
-    std::cout << "\n\u2714 Active: ";
+    std::cout << "\n█ Active: ";
     for (const auto &table : tables) {
       if (table.status == "PERFECT MATCH" ||
           table.status == "LISTENING_CHANGES") {
@@ -120,13 +138,13 @@ public:
                   << table.last_offset << ") ";
       }
     }
-    std::cout << std::endl;
+    std::cout << "\n";
   }
 
   void generateFullReport(pqxx::connection &pgConn) {
     auto tables = getAllTableStatuses(pgConn);
     auto stats = calculateSyncStats(tables);
-    printCompactReport(tables, stats);
+    printDashboard(tables, stats);
   }
 
   void generateFinalReport(pqxx::connection &pgConn) {
@@ -143,32 +161,6 @@ public:
     char buffer[16];
     std::strftime(buffer, sizeof(buffer), "%H:%M:%S", &tm);
     return std::string(buffer);
-  }
-
-  void exportReportToFile(const std::vector<TableStatus> &tables,
-                          const SyncStats &stats, const std::string &filename) {
-    std::ofstream file(filename);
-    if (!file.is_open()) {
-      std::cerr << "Error: Could not open file " << filename << " for writing"
-                << std::endl;
-      return;
-    }
-
-    file << "DataSync Report - " << getCurrentTimestamp() << std::endl;
-    file << "Total: " << stats.totalTables
-         << " | Synced: " << stats.totalSynchronized << " | Success: "
-         << (stats.totalTables > 0
-                 ? (stats.totalSynchronized * 100 / stats.totalTables)
-                 : 0)
-         << "%" << std::endl;
-
-    for (const auto &table : tables) {
-      file << table.schema_name << "." << table.table_name << " | "
-           << table.db_engine << " | " << table.status << " | "
-           << table.last_offset << std::endl;
-    }
-
-    file.close();
   }
 };
 

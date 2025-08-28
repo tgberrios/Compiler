@@ -1195,14 +1195,7 @@ public:
       }
     }
 
-    // Generate comprehensive sync report using SyncReporter
-    SyncReporter reporter;
-    reporter.generateFullReport(*pgConn);
-
-    if (shutdownRequested) {
-      std::cout << "\nGraceful shutdown completed. Exiting..." << std::endl;
-      exit(0);
-    }
+    // Reporting handled by StreamingData loop
   }
 
   void updateStatus(pqxx::connection &pgConn, const std::string &schema,

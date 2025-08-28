@@ -92,11 +92,11 @@ public:
       }
 
       auto tables = cm.executeQueryMSSQL(
-          conn.get(), "SELECT SCHEMA_NAME, TABLE_NAME "
-                      "FROM INFORMATION_SCHEMA.TABLES "
-                      "WHERE TABLE_TYPE = 'BASE TABLE' AND "
-                      "SCHEMA_NAME NOT IN ('sys', 'INFORMATION_SCHEMA', "
-                      "'guest', 'INFORMATION_SCHEMA');");
+          conn.get(),
+          "SELECT TABLE_SCHEMA, TABLE_NAME "
+          "FROM INFORMATION_SCHEMA.TABLES "
+          "WHERE TABLE_TYPE = 'BASE TABLE' AND "
+          "TABLE_SCHEMA NOT IN ('sys', 'INFORMATION_SCHEMA', 'guest');");
 
       for (const auto &row : tables) {
         if (row.size() < 2)
@@ -415,38 +415,38 @@ public:
 
     auto tables = getActiveTables(*pgConn);
 
-          for (const auto &table : tables) {
-        std::string schema_name = table.schema_name;
-        std::string table_name = table.table_name;
+    for (const auto &table : tables) {
+      std::string schema_name = table.schema_name;
+      std::string table_name = table.table_name;
 
-        std::shared_ptr<MSSQLConnection> mssqlConn = nullptr;
-        if (table.db_engine == "MSSQL") {
-          mssqlConn = cm.connectMSSQL(table.connection_string);
-          if (!mssqlConn) {
-            continue;
-          }
-        } else {
+      std::shared_ptr<MSSQLConnection> mssqlConn = nullptr;
+      if (table.db_engine == "MSSQL") {
+        mssqlConn = cm.connectMSSQL(table.connection_string);
+        if (!mssqlConn) {
           continue;
         }
+      } else {
+        continue;
+      }
 
-              std::string obtainColumnsQuery =
-            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, "
-            "COLUMNPROPERTY(object_id('" +
-            schema_name + "." + table_name +
-            "'), COLUMN_NAME, 'IsIdentity') AS IS_IDENTITY, "
-            "COLLATION_NAME, CHARACTER_SET_NAME "
-            "FROM INFORMATION_SCHEMA.COLUMNS "
-            "WHERE TABLE_SCHEMA = '" +
-            schema_name + "' AND TABLE_NAME = '" + table_name + "';";
+      std::string obtainColumnsQuery =
+          "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, "
+          "COLUMNPROPERTY(object_id('" +
+          schema_name + "." + table_name +
+          "'), COLUMN_NAME, 'IsIdentity') AS IS_IDENTITY, "
+          "COLLATION_NAME, CHARACTER_SET_NAME "
+          "FROM INFORMATION_SCHEMA.COLUMNS "
+          "WHERE TABLE_SCHEMA = '" +
+          schema_name + "' AND TABLE_NAME = '" + table_name + "';";
 
-        auto columns = cm.executeQueryMSSQL(mssqlConn.get(), obtainColumnsQuery);
+      auto columns = cm.executeQueryMSSQL(mssqlConn.get(), obtainColumnsQuery);
 
-              std::string lowerSchemaName = schema_name;
-        std::transform(lowerSchemaName.begin(), lowerSchemaName.end(),
-                       lowerSchemaName.begin(), ::tolower);
+      std::string lowerSchemaName = schema_name;
+      std::transform(lowerSchemaName.begin(), lowerSchemaName.end(),
+                     lowerSchemaName.begin(), ::tolower);
 
-        cm.executeQueryPostgres(*pgConn, "CREATE SCHEMA IF NOT EXISTS \"" +
-                                             lowerSchemaName + "\";");
+      cm.executeQueryPostgres(*pgConn, "CREATE SCHEMA IF NOT EXISTS \"" +
+                                           lowerSchemaName + "\";");
 
       std::string createTableQuery = "CREATE TABLE IF NOT EXISTS \"" +
                                      lowerSchemaName + "\".\"" + table_name +
@@ -454,17 +454,17 @@ public:
       bool hasColumns = false;
       std::vector<std::string> primaryKeyColumns;
 
-              for (const auto &col : columns) {
-          if (col.size() < 6) {
-            continue;
-          }
-          hasColumns = true;
-          std::string colName = sanitizeColumnName(col[0]);
-          std::string dataType = col[1];
-          std::string nullable = (col[2] == "YES") ? "" : " NOT NULL";
-          std::string isIdentity = col[3];
-          std::string collation = col[4];
-          std::string charSet = col[5];
+      for (const auto &col : columns) {
+        if (col.size() < 6) {
+          continue;
+        }
+        hasColumns = true;
+        std::string colName = sanitizeColumnName(col[0]);
+        std::string dataType = col[1];
+        std::string nullable = (col[2] == "YES") ? "" : " NOT NULL";
+        std::string isIdentity = col[3];
+        std::string collation = col[4];
+        std::string charSet = col[5];
 
         std::string pgDataType;
         if (isIdentity == "1") {
@@ -499,16 +499,16 @@ public:
         createTableQuery += ", ";
       }
 
-              if (hasColumns) {
-          createTableQuery.erase(createTableQuery.size() - 2, 2);
-          createTableQuery += ");";
+      if (hasColumns) {
+        createTableQuery.erase(createTableQuery.size() - 2, 2);
+        createTableQuery += ");";
 
-          try {
-            cm.executeQueryPostgres(*pgConn, createTableQuery);
-          } catch (const std::exception &e) {
-            // Error silencioso
-          }
+        try {
+          cm.executeQueryPostgres(*pgConn, createTableQuery);
+        } catch (const std::exception &e) {
+          // Error silencioso
         }
+      }
     }
   }
 
@@ -1398,8 +1398,7 @@ public:
       }
     }
 
-    SyncReporter reporter;
-    reporter.generateFullReport(*pgConn);
+    // Reporting handled by StreamingData loop
 
     if (MSSQLSync::shutdownRequested) {
       std::cout << "\nGraceful shutdown completed. Exiting..." << std::endl;
