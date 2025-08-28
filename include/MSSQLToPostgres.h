@@ -782,13 +782,13 @@ public:
           verifyColumnsExist(*pgConn, lowerSchemaName, table_name, columnNames);
 
       if (!tableExists || table.status == "full_load") {
-        std::cout << "Table " << schema_name << "." << table_name << " ";
+        // std::cout << "Table " << schema_name << "." << table_name << " ";
         if (table.status == "full_load") {
-          std::cout << "is full_load, recreating to avoid duplicates... :)"
-                    << std::endl;
+          // std::cout << "is full_load, recreating to avoid duplicates... :)"
+          //<< std::endl;
         } else {
-          std::cout << "does not exist in PostgreSQL. Recreating... :("
-                    << std::endl;
+          // std::cout << "does not exist in PostgreSQL. Recreating... :("
+          //<< std::endl;
         }
 
         cm.executeQueryPostgres(*pgConn, "DROP TABLE IF EXISTS \"" +
@@ -865,10 +865,10 @@ public:
           createTableQuery += ");";
           cm.executeQueryPostgres(*pgConn, createTableQuery);
           columnNames = newColumnNames;
-          std::cout << "Table " << lowerSchemaName << "." << table_name
-                    << " recreated successfully. :)" << std::endl;
+          // std::cout << "Table " << lowerSchemaName << "." << table_name
+          //<< " recreated successfully. :)" << std::endl;
 
-          std::cout << "  Syncing indexes and constraints..." << std::endl;
+          // std::cout << "  Syncing indexes and constraints..." << std::endl;
           syncIndexesAndConstraints(schema_name, table_name, mssqlConn, *pgConn,
                                     lowerSchemaName);
         }
@@ -1211,45 +1211,51 @@ public:
                     upsertQueryWithValues += "'" + escapedValue + "'";
                   }
                 }
-                std::string conflictColumns = "";
-                for (const auto &pkCol : primaryKeyColumns) {
-                  if (!conflictColumns.empty())
-                    conflictColumns += ", ";
-                  conflictColumns += "\"" + pkCol + "\"";
-                }
-
-                upsertQueryWithValues +=
-                    ") ON CONFLICT (" + conflictColumns + ") DO UPDATE SET ";
-
-                for (size_t i = 0; i < columnNames.size(); ++i) {
-                  bool isPrimaryKey = false;
+                if (!primaryKeyColumns.empty()) {
+                  std::string conflictColumns = "";
                   for (const auto &pkCol : primaryKeyColumns) {
-                    if (columnNames[i] == pkCol) {
-                      isPrimaryKey = true;
-                      break;
-                    }
+                    if (!conflictColumns.empty())
+                      conflictColumns += ", ";
+                    conflictColumns += "\"" + pkCol + "\"";
                   }
 
-                  if (!isPrimaryKey) {
-                    upsertQueryWithValues += "\"" + columnNames[i] +
-                                             "\" = EXCLUDED.\"" +
-                                             columnNames[i] + "\"";
-                    bool hasMoreNonPK = false;
-                    for (size_t j = i + 1; j < columnNames.size(); ++j) {
-                      bool isNextPK = false;
-                      for (const auto &pkCol : primaryKeyColumns) {
-                        if (columnNames[j] == pkCol) {
-                          isNextPK = true;
-                          break;
-                        }
-                      }
-                      if (!isNextPK) {
-                        hasMoreNonPK = true;
+                  upsertQueryWithValues +=
+                      ") ON CONFLICT (" + conflictColumns + ") DO UPDATE SET ";
+                } else {
+                  upsertQueryWithValues += ")";
+                }
+
+                if (!primaryKeyColumns.empty()) {
+                  for (size_t i = 0; i < columnNames.size(); ++i) {
+                    bool isPrimaryKey = false;
+                    for (const auto &pkCol : primaryKeyColumns) {
+                      if (columnNames[i] == pkCol) {
+                        isPrimaryKey = true;
                         break;
                       }
                     }
-                    if (hasMoreNonPK) {
-                      upsertQueryWithValues += ", ";
+
+                    if (!isPrimaryKey) {
+                      upsertQueryWithValues += "\"" + columnNames[i] +
+                                               "\" = EXCLUDED.\"" +
+                                               columnNames[i] + "\"";
+                      bool hasMoreNonPK = false;
+                      for (size_t j = i + 1; j < columnNames.size(); ++j) {
+                        bool isNextPK = false;
+                        for (const auto &pkCol : primaryKeyColumns) {
+                          if (columnNames[j] == pkCol) {
+                            isNextPK = true;
+                            break;
+                          }
+                        }
+                        if (!isNextPK) {
+                          hasMoreNonPK = true;
+                          break;
+                        }
+                      }
+                      if (hasMoreNonPK) {
+                        upsertQueryWithValues += ", ";
+                      }
                     }
                   }
                 }
@@ -1313,17 +1319,10 @@ public:
           updateStatus(*pgConn, schema_name, table_name, "error");
         }
 
-        totalProcessed += results.size();
-        chunkCount++;
-        if (chunkCount % 1 == 0) {
-          double progress = (sourceCount > 0)
-                                ? static_cast<double>(totalProcessed) /
-                                      static_cast<double>(sourceCount)
-                                : 0.0;
-          int percent = static_cast<int>(progress * 100.0);
-          std::cout << "\r[" << schema_name << "." << table_name << "] "
-                    << percent << "% (" << totalProcessed << "/" << sourceCount
-                    << ")" << std::flush;
+        if (table.status == "full_load") {
+          totalProcessed = sourceCount;
+        } else {
+          totalProcessed += results.size();
         }
 
         if (!results.empty() && !table.last_sync_column.empty()) {
@@ -1379,8 +1378,6 @@ public:
         if (!table.last_sync_column.empty()) {
           bool tableExistsInPG = verifyColumnsExist(*pgConn, lowerSchemaName,
                                                     table_name, columnNames);
-          std::cout << "[DEBUG] Table exists in PostgreSQL: "
-                    << (tableExistsInPG ? "YES" : "NO") << std::endl;
 
           if (tableExistsInPG) {
             updateStatus(*pgConn, schema_name, table_name, "LISTENING_CHANGES",

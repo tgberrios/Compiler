@@ -116,6 +116,7 @@ public:
     std::cout << " " << progressPercent << "% | ";
     std::cout << "█ Perfect: " << stats.perfectMatchCount << " | ";
     std::cout << "█ Listening: " << stats.listeningChangesCount << " | ";
+    std::cout << "█ Error: " << stats.errorCount << " | ";
     std::cout << "█ Time: " << getCurrentTimestamp() << std::flush;
   }
 

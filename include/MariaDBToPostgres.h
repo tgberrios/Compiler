@@ -542,9 +542,9 @@ public:
 
       // Para tablas full_load, solo TRUNCATE para mantener estructura
       if (table.status == "full_load") {
-        std::cout << "Table " << schema_name << "." << table_name
-                  << " is full_load, truncating to avoid duplicates... :)"
-                  << std::endl;
+        // std::cout << "Table " << schema_name << "." << table_name
+        //<< " is full_load, truncating to avoid duplicates... :)"
+        //<< std::endl;
 
         cm.executeQueryPostgres(*pgConn, "TRUNCATE TABLE \"" + lowerSchemaName +
                                              "\".\"" + table_name +
@@ -716,9 +716,6 @@ public:
                                     ") VALUES (" + placeholders + ")";
 
           if (!primaryKeyColumns.empty()) {
-            std::cout << "[DEBUG] Table " << schema_name << "." << table_name
-                      << " has primary key, using UPSERT with ON CONFLICT"
-                      << std::endl;
 
             std::string pkColumnsStr;
             for (size_t i = 0; i < primaryKeyColumns.size(); ++i) {
@@ -749,9 +746,6 @@ public:
               upsertQuery += " ON CONFLICT (" + pkColumnsStr + ") DO NOTHING";
             }
           } else {
-            std::cout << "[DEBUG] Table " << schema_name << "." << table_name
-                      << " has NO primary key, using simple INSERT"
-                      << std::endl;
           }
 
           size_t rowIndex = 0;
@@ -1106,14 +1100,6 @@ public:
         totalProcessed += results.size();
         chunkCount++;
         if (chunkCount % 1 == 0) {
-          double progress = (sourceCount > 0)
-                                ? static_cast<double>(totalProcessed) /
-                                      static_cast<double>(sourceCount)
-                                : 0.0;
-          int percent = static_cast<int>(progress * 100.0);
-          std::cout << "\r[" << schema_name << "." << table_name << "] "
-                    << percent << "% (" << totalProcessed << "/" << sourceCount
-                    << ") - Processing row " << totalProcessed << std::flush;
         }
 
         if (!results.empty() && !table.last_sync_column.empty()) {
@@ -1174,8 +1160,6 @@ public:
           // Verificar que la tabla existe en PostgreSQL antes de marcarla como
           // LISTENING_CHANGES
           bool tableExistsInPG = true;
-          std::cout << "[DEBUG] Table exists in PostgreSQL: "
-                    << (tableExistsInPG ? "YES" : "NO") << std::endl;
 
           if (tableExistsInPG) {
 
