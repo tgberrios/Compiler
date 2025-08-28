@@ -18,8 +18,14 @@ public:
     MariaDBToPostgres mariaToPg;
     PostgresToMariaDB pgToMaria;
     MSSQLToPostgres mssqlToPg;
+    SyncReporter reporter;
 
     int minutes_counter = 0;
+    pqxx::connection pgConn("host=localhost user=tomy.berrios "
+                            "password=Yucaquemada1 dbname=DataLake");
+
+    std::cout << "🚀 Starting DataSync System..." << std::endl;
+    std::cout << "Initializing database connections..." << std::endl;
 
     mariaToPg.syncCatalogMariaDBToPostgres();
     mariaToPg.setupTableTargetMariaDBToPostgres();
@@ -33,26 +39,24 @@ public:
     mssqlToPg.setupTableTargetMSSQLToPostgres();
     mssqlToPg.transferDataMSSQLToPostgres();
 
+    std::cout << "✅ Initial sync completed. Starting continuous monitoring..."
+              << std::endl;
+
     while (true) {
       mariaToPg.transferDataMariaDBToPostgres();
-
       pgToMaria.transferDataPostgresToMariaDB();
-
       mssqlToPg.transferDataMSSQLToPostgres();
+
+      reporter.generateFullReport(pgConn);
 
       minutes_counter += 1;
       if (minutes_counter >= 2) {
-        // mariaToPg.syncCatalogMariaDBToPostgres();
         mariaToPg.setupTableTargetMariaDBToPostgres();
-
-        // pgToMaria.syncCatalogPostgresToMariaDB();
-
         mssqlToPg.setupTableTargetMSSQLToPostgres();
-
         minutes_counter = 0;
       }
 
-      std::cout << "Pausando 30 segundos antes del siguiente delta load... ";
+      std::cout << " | Pausing 30s... ";
       const int total = 30;
       for (int i = 0; i <= total; ++i) {
         int progress = (i * 20) / total;
