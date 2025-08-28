@@ -898,7 +898,7 @@ public:
                 std::vector<std::string> paramValues;
                 for (size_t i = 0; i < processedValues.size(); ++i) {
                   if (processedValues[i] == "NULL") {
-                    paramValues.push_back(""); // Empty string for NULL
+                    paramValues.push_back("NULL"); // Empty string for NULL
                   } else if (processedValues[i].empty() &&
                              (columnTypes[i] == "DATE" ||
                               columnTypes[i] == "TIMESTAMP" ||
