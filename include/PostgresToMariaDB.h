@@ -1,6 +1,7 @@
 #ifndef POSTGRESTOMARIADB_H
 #define POSTGRESTOMARIADB_H
 
+#include "Config.h"
 #include "ConnectionManager.h"
 #include "SyncReporter.h"
 #include <algorithm>
@@ -167,8 +168,7 @@ public:
     ConnectionManager cm;
 
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
     static const std::vector<std::string> dateCandidates = {
         "updated_at",     "created_at",  "fecha_actualizacion",
@@ -281,8 +281,7 @@ public:
   void setupTableTargetPostgresToMariaDB() {
     ConnectionManager cm;
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
     auto tables = getActiveTables(*pgConn);
 
@@ -374,10 +373,9 @@ public:
   void transferDataPostgresToMariaDB() {
     ConnectionManager cm;
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
-    const size_t CHUNK_SIZE = 1000;
+    const size_t CHUNK_SIZE = SyncConfig::CHUNK_SIZE;
     auto tables = getActiveTables(*pgConn);
 
     for (const auto &table : tables) {

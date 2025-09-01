@@ -1,37 +1,19 @@
 #ifndef MARIADBTOPOSTGRES_H
 #define MARIADBTOPOSTGRES_H
 
+#include "Config.h"
 #include "ConnectionManager.h"
 #include "SyncReporter.h"
 #include <algorithm>
 #include <atomic>
 #include <iostream>
 #include <pqxx/pqxx>
-#include <signal.h>
+
 #include <string>
 
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-std::atomic<bool> shutdownRequested(false);
-std::atomic<bool> forceExit(false);
-
-void signalHandler(int signum) {
-  if (shutdownRequested.load()) {
-    forceExit = true;
-    std::cout << "\nForce exit requested. Terminating immediately..."
-              << std::endl;
-    exit(1);
-  }
-
-  shutdownRequested = true;
-  std::cout << "\n\nGraceful shutdown requested. Finishing current chunk..."
-            << std::endl;
-  std::cout << "Signal " << signum << " received. Exiting gracefully..."
-            << std::endl;
-  std::cout << "Press Ctrl+C again to force exit..." << std::endl;
-}
 
 class MariaDBToPostgres {
 public:
@@ -57,8 +39,7 @@ public:
     ConnectionManager cm;
 
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
     std::vector<std::string> mariaConnStrings;
     auto results = cm.executeQueryPostgres(
@@ -340,8 +321,7 @@ public:
     ConnectionManager cm;
 
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
     auto tables = getActiveTables(*pgConn);
 
@@ -397,12 +377,14 @@ public:
 
         std::string pgDataType;
         if (extra == "auto_increment") {
+          // ✅ Usar INTEGER/BIGINT en lugar de SERIAL para evitar conflictos de
+          // secuencias
           if (dataType == "int")
-            pgDataType = "SERIAL";
+            pgDataType = "INTEGER";
           else if (dataType == "bigint")
-            pgDataType = "BIGSERIAL";
+            pgDataType = "BIGINT";
           else
-            pgDataType = "SERIAL";
+            pgDataType = "INTEGER";
         } else {
           // Ensure proper timestamp type mapping
           if (dataType == "timestamp" || dataType == "datetime") {
@@ -451,13 +433,9 @@ public:
   }
 
   void transferDataMariaDBToPostgres() {
-    signal(SIGINT, signalHandler);
-    signal(SIGTERM, signalHandler);
-
     ConnectionManager cm;
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
     auto tables = getActiveTables(*pgConn);
     size_t totalTables = tables.size();
@@ -466,16 +444,8 @@ public:
     size_t syncedTables = 0;
 
     for (auto &table : tables) {
-
       if (table.status == "full_load") {
-
-        table.last_offset = "0";
-      }
-
-      if (shutdownRequested || forceExit) {
-        std::cout << "\nGraceful shutdown: exiting table processing loop"
-                  << std::endl;
-        break;
+        // NO resetear last_offset - continuar desde donde se quedó
       }
 
       std::string schema_name = table.schema_name;
@@ -540,15 +510,29 @@ public:
 
       bool tableExists = false;
 
-      // Para tablas full_load, solo TRUNCATE para mantener estructura
+      // Para tablas full_load, solo TRUNCATE si es la primera vez (last_offset
+      // = 0)
       if (table.status == "full_load") {
-        // std::cout << "Table " << schema_name << "." << table_name
-        //<< " is full_load, truncating to avoid duplicates... :)"
-        //<< std::endl;
+        // Verificar si es la primera vez procesando esta tabla
+        std::string checkOffsetQuery =
+            "SELECT last_offset FROM metadata.catalog WHERE schema_name='" +
+            cm.escapeSQL(schema_name) + "' AND table_name='" +
+            cm.escapeSQL(table_name) + "';";
+        auto offsetCheck = cm.executeQueryPostgres(*pgConn, checkOffsetQuery);
 
-        cm.executeQueryPostgres(*pgConn, "TRUNCATE TABLE \"" + lowerSchemaName +
-                                             "\".\"" + table_name +
-                                             "\" CASCADE;");
+        bool shouldTruncate = true;
+        if (!offsetCheck.empty() && !offsetCheck[0][0].is_null()) {
+          std::string currentOffset = offsetCheck[0][0].as<std::string>();
+          if (currentOffset != "0" && !currentOffset.empty()) {
+            shouldTruncate = false;
+          }
+        }
+
+        if (shouldTruncate) {
+          cm.executeQueryPostgres(*pgConn, "TRUNCATE TABLE \"" +
+                                               lowerSchemaName + "\".\"" +
+                                               table_name + "\" CASCADE;");
+        }
 
         // Obtener columnas de la tabla existente
         auto existingColumns = cm.executeQueryPostgres(
@@ -568,7 +552,7 @@ public:
         }
       }
 
-      const size_t CHUNK_SIZE = 25000;
+      const size_t CHUNK_SIZE = SyncConfig::CHUNK_SIZE;
       size_t totalProcessed = 0;
       std::string lastProcessedTimestamp;
 
@@ -577,22 +561,25 @@ public:
           cm.escapeSQL(schema_name) + "' AND table_name='" +
           cm.escapeSQL(table_name) + "';";
       auto currentOffsetRes = cm.executeQueryPostgres(*pgConn, offsetQuery);
-      if (!currentOffsetRes.empty() && !currentOffsetRes[0][0].is_null() &&
-          currentOffsetRes[0][0].as<std::string>() != "0") {
+
+      // Obtener last_offset de la base de datos
+      if (!currentOffsetRes.empty() && !currentOffsetRes[0][0].is_null()) {
+        std::string lastOffsetStr = currentOffsetRes[0][0].as<std::string>();
         try {
-          totalProcessed = std::stoul(currentOffsetRes[0][0].as<std::string>());
+          totalProcessed = std::stoul(lastOffsetStr);
         } catch (...) {
           totalProcessed = 0;
         }
+      } else {
+        totalProcessed = 0;
       }
 
       size_t chunkCount = 0;
       bool hasMoreData = true;
 
-      // Para tablas full_load, siempre procesar desde el inicio
+      // Para tablas full_load, continuar desde donde se quedó
       if (table.status == "full_load") {
-
-        totalProcessed = 0;
+        // totalProcessed ya tiene el valor de last_offset - no reiniciar
       } else {
         std::string checkQuery =
             "SELECT COUNT(*) FROM `" + schema_name + "`.`" + table_name + "`";
@@ -607,22 +594,12 @@ public:
         if (checkResult.empty() || checkResult[0][0].empty() ||
             std::stoul(checkResult[0][0]) == 0) {
           if (!table.last_sync_column.empty()) {
-            // Verificar que la tabla existe en PostgreSQL antes de marcarla
-            // como LISTENING_CHANGES
-            bool tableExistsInPG = true;
-            if (tableExistsInPG) {
-              updateStatus(*pgConn, schema_name, table_name,
-                           "LISTENING_CHANGES", sourceCount);
-            } else {
-              std::cerr << "Table " << lowerSchemaName << "." << table_name
-                        << " does not exist in PostgreSQL, marking as error"
-                        << std::endl;
-              updateStatus(*pgConn, schema_name, table_name, "error",
-                           sourceCount);
-            }
+            // ✅ No hay datos nuevos para procesar - mantener estado actual
+            // NO actualizar last_offset con sourceCount
           } else {
+            // ✅ Para tablas sin timestamp, verificar si ya procesamos todo
             if (!table.last_offset.empty() &&
-                std::stoul(table.last_offset) == sourceCount) {
+                std::stoul(table.last_offset) >= sourceCount) {
               updateStatus(*pgConn, schema_name, table_name, "PERFECT MATCH",
                            sourceCount);
             }
@@ -632,12 +609,6 @@ public:
       }
 
       while (hasMoreData) {
-        if (shutdownRequested || forceExit) {
-          std::cout << "\nGraceful shutdown: completing current chunk and "
-                       "checkpointing..."
-                    << std::endl;
-          break;
-        }
 
         std::string selectQuery =
             "SELECT * FROM `" + schema_name + "`.`" + table_name + "`";
@@ -674,6 +645,10 @@ public:
           break;
         }
 
+        // ✅ Mover variables al scope correcto
+        bool transactionSuccess = true;
+        size_t rowsInserted = 0;
+
         try {
           // Obtener PKs de la tabla existente en PostgreSQL
           std::vector<std::string> primaryKeyColumns;
@@ -694,8 +669,7 @@ public:
             }
           }
 
-          pqxx::work txn(*pgConn);
-          bool transactionSuccess = true;
+          // No crear transacción aquí para evitar transacciones anidadas
 
           std::string columnsStr;
           for (size_t i = 0; i < columnNames.size(); ++i) {
@@ -1039,7 +1013,9 @@ public:
 
                 upsertQueryWithValues += ";";
 
-                txn.exec(upsertQueryWithValues);
+                cm.executeQueryPostgres(*pgConn, upsertQueryWithValues);
+                rowsInserted++; // ✅ Solo incrementar si la inserción fue
+                                // exitosa
               } else {
                 continue;
               }
@@ -1069,23 +1045,9 @@ public:
               }
             }
 
-            if (!table.last_sync_column.empty() && !newLastSync.empty()) {
-              txn.exec_params("UPDATE metadata.catalog SET last_sync_time=$1, "
-                              "last_offset=$2, "
-                              "status='LISTENING_CHANGES' "
-                              "WHERE schema_name=$3 AND table_name=$4;",
-                              newLastSync, totalProcessed, schema_name,
-                              table_name);
-            } else {
-              txn.exec_params("UPDATE metadata.catalog SET last_offset=$1, "
-                              "status='PERFECT MATCH' "
-                              "WHERE schema_name=$2 AND table_name=$3;",
-                              totalProcessed, schema_name, table_name);
-            }
-
-            txn.commit();
+            // ✅ NO actualizar el estado aquí - se actualiza al final del
+            // procesamiento
           } else {
-            txn.abort();
             std::cerr << "Transaction aborted for table " << lowerSchemaName
                       << "." << table_name << std::endl;
             updateStatus(*pgConn, schema_name, table_name, "error");
@@ -1097,7 +1059,20 @@ public:
           updateStatus(*pgConn, schema_name, table_name, "error");
         }
 
-        totalProcessed += results.size();
+        // Solo actualizar totalProcessed si la inserción fue exitosa
+        if (transactionSuccess) {
+          totalProcessed += rowsInserted;
+
+          // Actualizar last_offset inmediatamente después de cada inserción
+          // exitosa
+          if (table.status == "full_load") {
+            updateStatus(*pgConn, schema_name, table_name, "full_load",
+                         totalProcessed);
+          } else {
+            updateStatus(*pgConn, schema_name, table_name, "LISTENING_CHANGES",
+                         totalProcessed);
+          }
+        }
         chunkCount++;
         if (chunkCount % 1 == 0) {
         }
@@ -1120,65 +1095,44 @@ public:
           // No need to track timestamp
         }
 
+        // ✅ Mejorar lógica de finalización para evitar terminación prematura
         if (results.size() < CHUNK_SIZE) {
-          hasMoreData = false;
+          hasMoreData = false; // Solo terminar si realmente no hay más datos
         }
 
-        if (table.last_sync_column.empty() && totalProcessed >= sourceCount) {
-          hasMoreData = false;
-        }
-
+        // Para tablas con timestamp, verificar si hay más datos nuevos
         if (!table.last_sync_column.empty() &&
             !lastProcessedTimestamp.empty() && !table.last_sync_time.empty()) {
           if (lastProcessedTimestamp <= table.last_sync_time) {
-            hasMoreData = false;
+            hasMoreData = false; // No hay datos más recientes
           }
         }
 
+        // Para tablas sin timestamp, verificar si ya procesamos todo
         if (table.last_sync_column.empty() && totalProcessed >= sourceCount) {
-          hasMoreData = false;
+          hasMoreData = false; // Ya procesamos todas las filas
+        }
+
+        // Para tablas con timestamp en full_load, verificar si ya procesamos
+        // todo
+        if (!table.last_sync_column.empty() && table.status == "full_load" &&
+            totalProcessed >= sourceCount) {
+          hasMoreData = false; // Ya procesamos todas las filas
         }
 
         results.clear();
-      }
-
-      if (shutdownRequested && totalProcessed > 0) {
-        std::cout << "\nGraceful shutdown: final checkpoint at "
-                  << totalProcessed << " rows" << std::endl;
-        updateStatus(*pgConn, schema_name, table_name, "in_progress",
-                     totalProcessed);
-        break;
       }
 
       if (totalProcessed > 0) {
         std::cout << std::endl;
       }
 
-      if (totalProcessed > 0) {
-
-        if (!table.last_sync_column.empty()) {
-          // Verificar que la tabla existe en PostgreSQL antes de marcarla como
-          // LISTENING_CHANGES
-          bool tableExistsInPG = true;
-
-          if (tableExistsInPG) {
-
-            updateStatus(*pgConn, schema_name, table_name, "LISTENING_CHANGES",
-                         totalProcessed);
-            syncedTables++;
-          } else {
-            std::cerr << "Table " << lowerSchemaName << "." << table_name
-                      << " does not exist in PostgreSQL, marking as error"
-                      << std::endl;
-            updateStatus(*pgConn, schema_name, table_name, "error",
-                         totalProcessed);
-          }
-        } else {
-
-          updateStatus(*pgConn, schema_name, table_name, "PERFECT MATCH",
-                       totalProcessed);
-          syncedTables++;
-        }
+      // Verificar si completamos full_load y cambiar a LISTENING_CHANGES
+      if (totalProcessed > 0 && table.status == "full_load" &&
+          totalProcessed >= sourceCount) {
+        updateStatus(*pgConn, schema_name, table_name, "LISTENING_CHANGES",
+                     totalProcessed);
+        syncedTables++;
       }
     }
 
@@ -1187,15 +1141,23 @@ public:
 
   void updateStatus(pqxx::connection &pgConn, const std::string &schema,
                     const std::string &table, const std::string &status,
-                    size_t lastOffset = 0) {
+                    size_t lastOffset = 0,
+                    const std::string &lastSyncTime = "") {
     try {
-
       pqxx::work txn(pgConn);
-      txn.exec_params("UPDATE metadata.catalog SET status=$1, last_offset=$2 "
-                      "WHERE schema_name=$3 AND table_name=$4;",
-                      status, lastOffset, schema, table);
-      txn.commit();
 
+      if (!lastSyncTime.empty()) {
+        txn.exec_params("UPDATE metadata.catalog SET status=$1, "
+                        "last_offset=$2, last_sync_time=$3 "
+                        "WHERE schema_name=$4 AND table_name=$5;",
+                        status, lastOffset, lastSyncTime, schema, table);
+      } else {
+        txn.exec_params("UPDATE metadata.catalog SET status=$1, last_offset=$2 "
+                        "WHERE schema_name=$3 AND table_name=$4;",
+                        status, lastOffset, schema, table);
+      }
+
+      txn.commit();
     } catch (const std::exception &e) {
       std::cerr << "Error updating status: " << e.what() << std::endl;
     }

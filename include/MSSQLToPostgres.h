@@ -1,38 +1,18 @@
 #ifndef MSSQLTOPOSTGRES_H
 #define MSSQLTOPOSTGRES_H
 
+#include "Config.h"
 #include "ConnectionManager.h"
 #include "SyncReporter.h"
 #include <algorithm>
 #include <atomic>
 #include <iostream>
 #include <pqxx/pqxx>
-#include <signal.h>
+
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
-
-namespace MSSQLSync {
-std::atomic<bool> shutdownRequested(false);
-std::atomic<bool> forceExit(false);
-
-void signalHandler(int signum) {
-  if (shutdownRequested.load()) {
-    forceExit = true;
-    std::cout << "\nForce exit requested. Terminating immediately..."
-              << std::endl;
-    exit(1);
-  }
-
-  shutdownRequested = true;
-  std::cout << "\n\nGraceful shutdown requested. Finishing current chunk..."
-            << std::endl;
-  std::cout << "Signal " << signum << " received. Exiting gracefully..."
-            << std::endl;
-  std::cout << "Press Ctrl+C again to force exit..." << std::endl;
-}
-} // namespace MSSQLSync
 
 class MSSQLToPostgres {
 public:
@@ -58,8 +38,7 @@ public:
     ConnectionManager cm;
 
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
     static const std::vector<std::string> dateCandidates = {
         "updated_at",     "created_at",  "fecha_actualizacion",
@@ -409,8 +388,7 @@ public:
     ConnectionManager cm;
 
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
     if (!pgConn) {
       return;
     }
@@ -688,13 +666,10 @@ public:
   }
 
   void transferDataMSSQLToPostgres() {
-    signal(SIGINT, MSSQLSync::signalHandler);
-    signal(SIGTERM, MSSQLSync::signalHandler);
 
     ConnectionManager cm;
     auto pgConn =
-        cm.connectPostgres("host=localhost dbname=DataLake "
-                           "user=Datalake_User password=keepprofessional");
+        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
     detectAndFixCorruptedSyncs(*pgConn);
     detectAndFixEmptyTargetTables(*pgConn);
@@ -708,12 +683,6 @@ public:
     for (auto &table : tables) {
       if (table.status == "full_load") {
         table.last_offset = "0";
-      }
-
-      if (MSSQLSync::shutdownRequested || MSSQLSync::forceExit) {
-        std::cout << "\nGraceful shutdown: exiting table processing loop"
-                  << std::endl;
-        break;
       }
 
       std::string schema_name = table.schema_name;
@@ -874,7 +843,7 @@ public:
         }
       }
 
-      const size_t CHUNK_SIZE = 25000;
+      const size_t CHUNK_SIZE = SyncConfig::CHUNK_SIZE;
       size_t totalProcessed = 0;
       std::string lastProcessedTimestamp;
 
@@ -934,12 +903,6 @@ public:
       }
 
       while (hasMoreData) {
-        if (MSSQLSync::shutdownRequested || MSSQLSync::forceExit) {
-          std::cout << "\nGraceful shutdown: completing current chunk and "
-                       "checkpointing..."
-                    << std::endl;
-          break;
-        }
 
         std::string selectQuery =
             "SELECT * FROM [" + schema_name + "].[" + table_name + "]";
@@ -1320,7 +1283,21 @@ public:
         }
 
         if (table.status == "full_load") {
-          totalProcessed = sourceCount;
+          // Para full_load, obtener el count REAL de la tabla destino
+          // (PostgreSQL)
+          try {
+            auto targetCountRes = cm.executeQueryPostgres(
+                *pgConn, "SELECT COUNT(*) FROM \"" + lowerSchemaName + "\".\"" +
+                             table_name + "\";");
+            if (!targetCountRes.empty() && !targetCountRes[0][0].is_null()) {
+              totalProcessed =
+                  std::stoul(targetCountRes[0][0].as<std::string>());
+            } else {
+              totalProcessed = 0;
+            }
+          } catch (...) {
+            totalProcessed = 0;
+          }
         } else {
           totalProcessed += results.size();
         }
@@ -1362,14 +1339,6 @@ public:
         results.clear();
       }
 
-      if (MSSQLSync::shutdownRequested && totalProcessed > 0) {
-        std::cout << "\nGraceful shutdown: final checkpoint at "
-                  << totalProcessed << " rows" << std::endl;
-        updateStatus(*pgConn, schema_name, table_name, "in_progress",
-                     totalProcessed);
-        break;
-      }
-
       if (totalProcessed > 0) {
         std::cout << std::endl;
       }
@@ -1399,11 +1368,6 @@ public:
     }
 
     // Reporting handled by StreamingData loop
-
-    if (MSSQLSync::shutdownRequested) {
-      std::cout << "\nGraceful shutdown completed. Exiting..." << std::endl;
-      exit(0);
-    }
   }
 };
 

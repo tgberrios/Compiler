@@ -146,7 +146,20 @@ public:
       // std::cout << "[INFO] Query: " << query << std::endl;
       return res;
     } catch (const std::exception &e) {
-      std::cerr << "Query execution failed: " << e.what() << std::endl;
+      std::string errorMsg = e.what();
+      // Suprimir errores que no afectan la funcionalidad
+      if (errorMsg.find("duplicate key value violates unique constraint") !=
+              std::string::npos &&
+          errorMsg.find("pg_class_relname_nsp_index") != std::string::npos) {
+        // Error de secuencia duplicada - ignorar silenciosamente
+        return pqxx::result();
+      }
+      if (errorMsg.find("relation") != std::string::npos &&
+          errorMsg.find("already exists") != std::string::npos) {
+        // Error de tabla ya existe - ignorar silenciosamente
+        return pqxx::result();
+      }
+      std::cerr << "Query execution failed: " << errorMsg << std::endl;
       throw;
     }
   }
@@ -216,8 +229,6 @@ public:
         result += buffer;
       }
       pclose(pipe);
-
-
 
       std::istringstream iss(result);
       std::string line;

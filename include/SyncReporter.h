@@ -1,6 +1,7 @@
 #ifndef SYNCREPORTER_H
 #define SYNCREPORTER_H
 
+#include "Config.h"
 #include "ConnectionManager.h"
 #include <chrono>
 #include <fstream>
@@ -81,14 +82,6 @@ public:
     return stats;
   }
 
-  void printCompactReport(const std::vector<TableStatus> &tables,
-                          const SyncStats &stats) {
-    std::cout << "\r█ Sync: " << stats.totalSynchronized << "/"
-              << stats.totalTables << " tables | ✓ " << stats.perfectMatchCount
-              << " | ▄ " << stats.listeningChangesCount << " | "
-              << getCurrentTimestamp() << std::flush;
-  }
-
   void printDashboard(const std::vector<TableStatus> &tables,
                       const SyncStats &stats) {
     static int refreshCounter = 0;
@@ -120,38 +113,10 @@ public:
     std::cout << "█ Time: " << getCurrentTimestamp() << std::flush;
   }
 
-  void printFinalReport(const std::vector<TableStatus> &tables,
-                        const SyncStats &stats) {
-    std::cout << "\n\n█ FINAL SYNC REPORT " << getCurrentTimestamp() << "\n";
-    std::cout << "=====================================\n";
-    std::cout << "Total: " << stats.totalTables
-              << " | Synced: " << stats.totalSynchronized << " | Success: "
-              << (stats.totalTables > 0
-                      ? (stats.totalSynchronized * 100 / stats.totalTables)
-                      : 0)
-              << "%\n";
-
-    std::cout << "\n█ Active: ";
-    for (const auto &table : tables) {
-      if (table.status == "PERFECT MATCH" ||
-          table.status == "LISTENING_CHANGES") {
-        std::cout << table.schema_name << "." << table.table_name << "("
-                  << table.last_offset << ") ";
-      }
-    }
-    std::cout << "\n";
-  }
-
   void generateFullReport(pqxx::connection &pgConn) {
     auto tables = getAllTableStatuses(pgConn);
     auto stats = calculateSyncStats(tables);
     printDashboard(tables, stats);
-  }
-
-  void generateFinalReport(pqxx::connection &pgConn) {
-    auto tables = getAllTableStatuses(pgConn);
-    auto stats = calculateSyncStats(tables);
-    printFinalReport(tables, stats);
   }
 
   std::string getCurrentTimestamp() {
