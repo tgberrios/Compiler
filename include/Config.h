@@ -18,9 +18,10 @@ struct DatabaseConfig {
 };
 
 struct SyncConfig {
-  static constexpr size_t MAX_CONCURRENT_TABLES = 3; // Procesar 3 tablas simultáneamente
-  static constexpr size_t CHUNK_SIZE = 25000;        // Filas por chunk (consistente en todas las sincronizaciones)
-  static constexpr size_t SYNC_INTERVAL_SECONDS = 30; // Intervalo de sincronización
+  static constexpr size_t CHUNK_SIZE =
+      25000; // Filas por chunk (consistente en todas las sincronizaciones)
+  static constexpr size_t SYNC_INTERVAL_SECONDS =
+      30; // Intervalo de sincronización
 };
 
 const std::string DatabaseConfig::POSTGRES_HOST = "localhost";
