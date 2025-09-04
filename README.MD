@@ -33,3 +33,5 @@ UPDATE metadata.catalog SET status='full_load', last_offset=0 WHERE schema_name=
 -- Pause synchronization for a table
 UPDATE metadata.catalog SET active=false WHERE schema_name='schema' AND table_name='table';
 ```
+
+cmake . && make
