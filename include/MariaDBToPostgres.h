@@ -41,6 +41,11 @@ public:
     auto pgConn =
         cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
 
+    // Check if catalog sync was already done recently (within last 5 minutes)
+    // We'll check this per connection instead of globally
+
+    std::cout << "• MariaDB Sync" << std::endl;
+
     std::vector<std::string> mariaConnStrings;
     auto results = cm.executeQueryPostgres(
         *pgConn, "SELECT connection_string FROM metadata.catalog "
@@ -62,9 +67,29 @@ public:
       }
     }
 
+    if (mariaConnStrings.empty()) {
+      return;
+    }
+
     for (const auto &connStr : mariaConnStrings) {
+      // Check if this specific connection was already processed recently
+      auto connectionCheck = cm.executeQueryPostgres(
+          *pgConn, "SELECT COUNT(*) FROM metadata.catalog "
+                   "WHERE connection_string='" +
+                       cm.escapeSQL(connStr) +
+                       "' AND db_engine='MariaDB' AND active=true "
+                       "AND last_sync_time > NOW() - INTERVAL '5 minutes';");
+
+      if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
+        int connectionCount = connectionCheck[0][0].as<int>();
+        if (connectionCount > 0) {
+          continue;
+        }
+      }
+
       auto conn = cm.connectMariaDB(connStr);
       if (!conn) {
+        std::cerr << "✗ Failed to connect to MariaDB: " << connStr << std::endl;
         continue;
       }
 
@@ -75,13 +100,35 @@ public:
           "WHERE table_schema NOT IN "
           "('mysql','information_schema','sys','performance_schema');");
 
+      size_t newTablesCount = 0;
+      size_t existingTablesCount = 0;
+
       for (const auto &row : tables) {
         if (row.size() < 2)
           continue;
 
+        const std::string &schema_name = row[0];
+        const std::string &table_name = row[1];
+
+        // Check if table already exists in catalog
+        auto existingCheck = cm.executeQueryPostgres(
+            *pgConn, "SELECT COUNT(*) FROM metadata.catalog "
+                     "WHERE schema_name='" +
+                         cm.escapeSQL(schema_name) + "' AND table_name='" +
+                         cm.escapeSQL(table_name) +
+                         "' AND db_engine='MariaDB';");
+
+        if (!existingCheck.empty() && !existingCheck[0][0].is_null()) {
+          int count = existingCheck[0][0].as<int>();
+          if (count > 0) {
+            existingTablesCount++;
+            continue; // Skip existing tables
+          }
+        }
+
+        newTablesCount++;
+
         try {
-          const std::string &schema_name = row[0];
-          const std::string &table_name = row[1];
 
           auto columns = cm.executeQueryMariaDB(
               conn.get(), "SELECT COLUMN_NAME FROM information_schema.columns "
@@ -124,12 +171,31 @@ public:
             txn.commit();
 
           } catch (const std::exception &e) {
+            std::cerr << "✗ Error inserting catalog entry for " << schema_name
+                      << "." << table_name << ": " << e.what() << std::endl;
           }
         } catch (const std::exception &e) {
+          std::cerr << "✗ Error processing table " << schema_name << "."
+                    << table_name << ": " << e.what() << std::endl;
           continue;
         } catch (...) {
+          std::cerr << "✗ Unknown error processing table " << schema_name << "."
+                    << table_name << std::endl;
           continue;
         }
+      }
+
+      // Update last_sync_time for this specific connection to mark completion
+      try {
+        pqxx::work txn(*pgConn);
+        txn.exec_params("UPDATE metadata.catalog SET last_sync_time = NOW() "
+                        "WHERE connection_string=$1 AND db_engine='MariaDB' "
+                        "AND active=true;",
+                        connStr);
+        txn.commit();
+      } catch (const std::exception &e) {
+        std::cerr << "Error updating last_sync_time for connection: "
+                  << e.what() << std::endl;
       }
     }
   }
@@ -342,7 +408,7 @@ public:
 
       std::string obtainColumnsQuery =
           "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, "
-          "COLLATION_NAME, CHARACTER_SET_NAME "
+          "COLLATION_NAME, CHARACTER_SET_NAME, CHARACTER_MAXIMUM_LENGTH "
           "FROM information_schema.columns "
           "WHERE table_schema = '" +
           schema_name + "' AND table_name = '" + table_name + "';";
@@ -364,7 +430,7 @@ public:
       std::vector<std::string> primaryKeyColumns;
 
       for (const auto &col : columns) {
-        if (col.size() < 7)
+        if (col.size() < 8)
           continue;
         hasColumns = true;
         std::string colName = sanitizeColumnName(col[0]);
@@ -374,11 +440,10 @@ public:
         std::string extra = col[4];
         std::string collation = col[5];
         std::string charSet = col[6];
+        std::string maxLength = col[7];
 
         std::string pgDataType;
         if (extra == "auto_increment") {
-          // ✅ Usar INTEGER/BIGINT en lugar de SERIAL para evitar conflictos de
-          // secuencias
           if (dataType == "int")
             pgDataType = "INTEGER";
           else if (dataType == "bigint")
@@ -386,13 +451,25 @@ public:
           else
             pgDataType = "INTEGER";
         } else {
-          // Ensure proper timestamp type mapping
           if (dataType == "timestamp" || dataType == "datetime") {
             pgDataType = "TIMESTAMP";
           } else if (dataType == "date") {
             pgDataType = "DATE";
           } else if (dataType == "time") {
             pgDataType = "TIME";
+          } else if (dataType == "char") {
+            if (!maxLength.empty() && maxLength != "NULL") {
+              pgDataType = "CHAR(" + maxLength + ")";
+            } else {
+              pgDataType = "VARCHAR(255)"; // Cambiar CHAR(1) por VARCHAR(255)
+                                           // para evitar errores
+            }
+          } else if (dataType == "varchar") {
+            if (!maxLength.empty() && maxLength != "NULL") {
+              pgDataType = "VARCHAR(" + maxLength + ")";
+            } else {
+              pgDataType = "VARCHAR";
+            }
           } else {
             pgDataType =
                 dataTypeMap.count(dataType) ? dataTypeMap[dataType] : "TEXT";
@@ -402,8 +479,8 @@ public:
         createTableQuery += "\"" + colName + "\" " + pgDataType + nullable;
 
         // Add collation for text-based types
-        if (pgDataType == "VARCHAR" || pgDataType == "TEXT" ||
-            pgDataType == "CHAR") {
+        if (pgDataType.find("VARCHAR") == 0 || pgDataType == "TEXT" ||
+            pgDataType.find("CHAR") == 0) {
           std::string pgCollation = mapCollationToPostgres(collation, charSet);
           createTableQuery += " COLLATE \"" + pgCollation + "\"";
         }
@@ -475,10 +552,28 @@ public:
         sourceCount = std::stoul(countRes[0][0]);
       }
 
+      // Check if source table is empty
+      if (sourceCount == 0) {
+        // Check target count in PostgreSQL
+        auto targetCountRes = cm.executeQueryPostgres(
+            *pgConn, "SELECT COUNT(*) FROM \"" + lowerSchemaName + "\".\"" +
+                         table_name + "\";");
+        size_t targetCount = 0;
+        if (!targetCountRes.empty() && !targetCountRes[0][0].is_null()) {
+          targetCount = targetCountRes[0][0].as<size_t>();
+        }
+
+        // If both source and target are empty, mark as NO DATA
+        if (targetCount == 0) {
+          updateStatus(*pgConn, schema_name, table_name, "NO DATA", 0);
+          continue;
+        }
+      }
+
       auto columns = cm.executeQueryMariaDB(
           mariadbConn.get(),
           "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, "
-          "COLLATION_NAME, CHARACTER_SET_NAME "
+          "COLLATION_NAME, CHARACTER_SET_NAME, CHARACTER_MAXIMUM_LENGTH "
           "FROM information_schema.columns "
           "WHERE table_schema = '" +
               schema_name + "' AND table_name = '" + table_name + "';");
@@ -492,13 +587,32 @@ public:
       std::vector<std::string> columnTypes;
       std::vector<bool> columnNullable;
       for (const auto &col : columns) {
-        if (col.size() < 5) {
+        if (col.size() < 8) {
           continue;
         }
         columnNames.push_back(sanitizeColumnName(col[0]));
         std::string dataType = col[1];
-        std::string pgDataType =
-            dataTypeMap.count(dataType) ? dataTypeMap[dataType] : "TEXT";
+        std::string maxLength = col[7];
+
+        std::string pgDataType;
+        if (dataType == "char") {
+          if (!maxLength.empty() && maxLength != "NULL") {
+            pgDataType = "CHAR(" + maxLength + ")";
+          } else {
+            pgDataType = "VARCHAR(255)"; // Cambiar CHAR(1) por VARCHAR(255)
+                                         // para evitar errores
+          }
+        } else if (dataType == "varchar") {
+          if (!maxLength.empty() && maxLength != "NULL") {
+            pgDataType = "VARCHAR(" + maxLength + ")";
+          } else {
+            pgDataType = "VARCHAR";
+          }
+        } else {
+          pgDataType =
+              dataTypeMap.count(dataType) ? dataTypeMap[dataType] : "TEXT";
+        }
+
         columnTypes.push_back(pgDataType);
         columnNullable.push_back(col[2] == "YES");
       }
@@ -552,7 +666,7 @@ public:
         }
       }
 
-      const size_t CHUNK_SIZE = SyncConfig::CHUNK_SIZE;
+      const size_t CHUNK_SIZE = SyncConfig::getChunkSize();
       size_t totalProcessed = 0;
       std::string lastProcessedTimestamp;
 
@@ -644,6 +758,9 @@ public:
           hasMoreData = false;
           break;
         }
+
+        // ✅ Procesar TODOS los chunks de esta tabla sin salir del bucle
+        // Solo salir si realmente no hay más datos
 
         // ✅ Mover variables al scope correcto
         bool transactionSuccess = true;
@@ -1095,10 +1212,8 @@ public:
           // No need to track timestamp
         }
 
-        // ✅ Mejorar lógica de finalización para evitar terminación prematura
-        if (results.size() < CHUNK_SIZE) {
-          hasMoreData = false; // Solo terminar si realmente no hay más datos
-        }
+        // ✅ Lógica mejorada para continuar procesando TODOS los chunks
+        // Solo terminar si realmente no hay más datos
 
         // Para tablas con timestamp, verificar si hay más datos nuevos
         if (!table.last_sync_column.empty() &&
@@ -1120,19 +1235,27 @@ public:
           hasMoreData = false; // Ya procesamos todas las filas
         }
 
+        // ✅ Solo terminar si el batch actual está vacío (no hay más datos)
+        if (results.empty()) {
+          hasMoreData = false;
+        }
+
         results.clear();
       }
 
       if (totalProcessed > 0) {
-        std::cout << std::endl;
       }
 
       // Verificar si completamos full_load y cambiar a LISTENING_CHANGES
-      if (totalProcessed > 0 && table.status == "full_load" &&
-          totalProcessed >= sourceCount) {
+      if (totalProcessed >= sourceCount && table.status == "full_load") {
+        std::cout << "✓ Table " << schema_name << "." << table_name
+                  << " FULL SYNC COMPLETED: " << totalProcessed << "/"
+                  << sourceCount << " rows" << std::endl;
         updateStatus(*pgConn, schema_name, table_name, "LISTENING_CHANGES",
                      totalProcessed);
         syncedTables++;
+      } else if (totalProcessed > 0 && table.status == "full_load") {
+      } else if (totalProcessed >= sourceCount) {
       }
     }
 
@@ -1148,13 +1271,15 @@ public:
 
       if (!lastSyncTime.empty()) {
         txn.exec_params("UPDATE metadata.catalog SET status=$1, "
-                        "last_offset=$2, last_sync_time=$3 "
+                        "last_offset=$2, last_sync_time=$3, last_refresh=NOW() "
                         "WHERE schema_name=$4 AND table_name=$5;",
                         status, lastOffset, lastSyncTime, schema, table);
       } else {
-        txn.exec_params("UPDATE metadata.catalog SET status=$1, last_offset=$2 "
-                        "WHERE schema_name=$3 AND table_name=$4;",
-                        status, lastOffset, schema, table);
+        txn.exec_params(
+            "UPDATE metadata.catalog SET status=$1, last_offset=$2, "
+            "last_refresh=NOW() "
+            "WHERE schema_name=$3 AND table_name=$4;",
+            status, lastOffset, schema, table);
       }
 
       txn.commit();

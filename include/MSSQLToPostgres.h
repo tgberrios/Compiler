@@ -35,6 +35,7 @@ public:
   };
 
   void syncCatalogMSSQLToPostgres() {
+    std::cout << "• MSSQL-Server Sync" << std::endl;
     ConnectionManager cm;
 
     auto pgConn =
@@ -711,6 +712,24 @@ public:
         sourceCount = std::stoul(countRes[0][0]);
       }
 
+      // Check if source table is empty
+      if (sourceCount == 0) {
+        // Check target count in PostgreSQL
+        auto targetCountRes = cm.executeQueryPostgres(
+            *pgConn, "SELECT COUNT(*) FROM \"" + lowerSchemaName + "\".\"" +
+                         table_name + "\";");
+        size_t targetCount = 0;
+        if (!targetCountRes.empty() && !targetCountRes[0][0].is_null()) {
+          targetCount = targetCountRes[0][0].as<size_t>();
+        }
+
+        // If both source and target are empty, mark as NO DATA
+        if (targetCount == 0) {
+          updateStatus(*pgConn, schema_name, table_name, "NO DATA", 0);
+          continue;
+        }
+      }
+
       auto columns = cm.executeQueryMSSQL(
           mssqlConn.get(), "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, "
                            "COLUMNPROPERTY(object_id('" +
@@ -843,7 +862,7 @@ public:
         }
       }
 
-      const size_t CHUNK_SIZE = SyncConfig::CHUNK_SIZE;
+      const size_t CHUNK_SIZE = SyncConfig::getChunkSize();
       size_t totalProcessed = 0;
       std::string lastProcessedTimestamp;
 
@@ -1317,7 +1336,8 @@ public:
           }
         }
 
-        if (results.size() < CHUNK_SIZE) {
+        // ✅ Solo terminar si el batch actual está vacío (no hay más datos)
+        if (results.empty()) {
           hasMoreData = false;
         }
 
