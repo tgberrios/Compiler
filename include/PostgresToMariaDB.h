@@ -209,6 +209,49 @@ public:
     return "utf8mb4_unicode_ci";
   }
 
+  std::string convertDefaultValue(const std::string &pgDefault,
+                                  const std::string &mariaDataType) {
+    if (pgDefault.empty())
+      return "";
+
+    if (pgDefault == "now()") {
+      return "CURRENT_TIMESTAMP";
+    }
+
+    if (pgDefault.find("gen_random_uuid()") != std::string::npos) {
+      return "UUID()";
+    }
+
+    if (pgDefault.find("::character varying") != std::string::npos) {
+      std::string value = pgDefault;
+      size_t pos = value.find("::character varying");
+      if (pos != std::string::npos) {
+        value = value.substr(0, pos);
+      }
+      return value;
+    }
+
+    if (pgDefault.find("::text") != std::string::npos) {
+      std::string value = pgDefault;
+      size_t pos = value.find("::text");
+      if (pos != std::string::npos) {
+        value = value.substr(0, pos);
+      }
+      return value;
+    }
+
+    if (pgDefault.find("::") != std::string::npos) {
+      std::string value = pgDefault;
+      size_t pos = value.find("::");
+      if (pos != std::string::npos) {
+        value = value.substr(0, pos);
+      }
+      return value;
+    }
+
+    return pgDefault;
+  }
+
   std::string sanitizeColumnName(const std::string &name) {
     std::string sanitized = name;
     std::transform(sanitized.begin(), sanitized.end(), sanitized.begin(),
@@ -315,11 +358,28 @@ public:
       }
 
       std::string obtainColumnsQuery =
-          "SELECT column_name, data_type, is_nullable, column_default, "
-          "character_set_name, collation_name "
-          "FROM information_schema.columns "
-          "WHERE table_schema = '" +
-          schema_name + "' AND table_name = '" + table_name + "';";
+          "SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, "
+          "c.character_set_name, c.collation_name, "
+          "CASE WHEN pk.column_name IS NOT NULL THEN 'YES' ELSE 'NO' END as "
+          "is_primary_key "
+          "FROM information_schema.columns c "
+          "LEFT JOIN ( "
+          "  SELECT ku.column_name "
+          "  FROM information_schema.table_constraints tc "
+          "  JOIN information_schema.key_column_usage ku "
+          "  ON tc.constraint_name = ku.constraint_name "
+          "  WHERE tc.constraint_type = 'PRIMARY KEY' "
+          "  AND tc.table_schema = '" +
+          schema_name +
+          "' "
+          "  AND tc.table_name = '" +
+          table_name +
+          "' "
+          ") pk ON c.column_name = pk.column_name "
+          "WHERE c.table_schema = '" +
+          schema_name + "' AND c.table_name = '" + table_name +
+          "' "
+          "ORDER BY c.ordinal_position;";
 
       auto columns = cm.executeQueryPostgres(*postgresConn, obtainColumnsQuery);
 
@@ -343,66 +403,135 @@ public:
       std::vector<std::string> primaryKeyColumns;
 
       for (const auto &col : columns) {
-        if (col.size() < 6)
+        if (col.size() < 7) {
+          std::cerr << "Warning: Insufficient column data for table "
+                    << schema_name << "." << table_name << ", skipping column"
+                    << std::endl;
           continue;
+        }
         hasColumns = true;
-        std::string colName = sanitizeColumnName(col[0].as<std::string>());
-        std::string dataType = col[1].as<std::string>();
-        std::string nullable =
-            (col[2].as<std::string>() == "YES") ? "" : " NOT NULL";
-        std::string columnDefault =
-            col[3].is_null() ? "" : col[3].as<std::string>();
-        std::string charSet = col[4].is_null() ? "" : col[4].as<std::string>();
-        std::string collation =
-            col[5].is_null() ? "" : col[5].as<std::string>();
 
-        std::string mariaDataType;
-        if (columnDefault.find("nextval") != std::string::npos) {
-          if (dataType == "integer")
-            mariaDataType = "INT AUTO_INCREMENT";
-          else if (dataType == "bigint")
-            mariaDataType = "BIGINT AUTO_INCREMENT";
-          else
-            mariaDataType = "INT AUTO_INCREMENT";
-        } else {
-          if (dataType == "timestamp without time zone" ||
-              dataType == "timestamp") {
-            mariaDataType = "TIMESTAMP";
-          } else if (dataType == "date") {
-            mariaDataType = "DATE";
-          } else if (dataType == "time without time zone" ||
-                     dataType == "time") {
-            mariaDataType = "TIME";
+        try {
+          std::string colName = sanitizeColumnName(col[0].as<std::string>());
+          std::string dataType = col[1].as<std::string>();
+          std::string nullable =
+              (col[2].as<std::string>() == "YES") ? "" : " NOT NULL";
+          std::string columnDefault =
+              col[3].is_null() ? "" : col[3].as<std::string>();
+          std::string charSet =
+              col[4].is_null() ? "" : col[4].as<std::string>();
+          std::string collation =
+              col[5].is_null() ? "" : col[5].as<std::string>();
+          std::string isPrimaryKey = col[6].as<std::string>();
+
+          std::string mariaDataType;
+          bool isAutoIncrement = false;
+
+          if (columnDefault.find("nextval") != std::string::npos &&
+              isPrimaryKey == "YES") {
+            isAutoIncrement = true;
+            if (dataType == "integer")
+              mariaDataType = "INT";
+            else if (dataType == "bigint")
+              mariaDataType = "BIGINT";
+            else
+              mariaDataType = "INT";
           } else {
-            mariaDataType =
-                dataTypeMap.count(dataType) ? dataTypeMap[dataType] : "TEXT";
+            if (dataType == "timestamp without time zone" ||
+                dataType == "timestamp") {
+              mariaDataType = "TIMESTAMP";
+            } else if (dataType == "date") {
+              mariaDataType = "DATE";
+            } else if (dataType == "time without time zone" ||
+                       dataType == "time") {
+              mariaDataType = "TIME";
+            } else {
+              if (dataTypeMap.count(dataType)) {
+                mariaDataType = dataTypeMap[dataType];
+              } else if (dataType.find("character varying") !=
+                         std::string::npos) {
+                mariaDataType = "VARCHAR(255)";
+              } else if (dataType.find("character") != std::string::npos) {
+                mariaDataType = "CHAR(1)";
+              } else {
+                mariaDataType = "TEXT";
+              }
+            }
           }
+
+          createTableQuery += "`" + colName + "` " + mariaDataType;
+
+          if (isAutoIncrement) {
+            createTableQuery += " AUTO_INCREMENT";
+          }
+
+          createTableQuery += nullable;
+
+          if (!columnDefault.empty() &&
+              columnDefault.find("nextval") == std::string::npos) {
+            std::string mariaDefault =
+                convertDefaultValue(columnDefault, mariaDataType);
+            if (!mariaDefault.empty()) {
+              createTableQuery += " DEFAULT " + mariaDefault;
+            }
+          }
+
+          if (!charSet.empty()) {
+            createTableQuery += " CHARACTER SET " + charSet;
+          }
+
+          if (!collation.empty()) {
+            std::string mariaCollation =
+                mapCollationToMariaDB(collation, charSet);
+            createTableQuery += " COLLATE " + mariaCollation;
+          }
+
+          createTableQuery += ", ";
+
+          if (isPrimaryKey == "YES") {
+            primaryKeyColumns.push_back(colName);
+          }
+
+        } catch (const std::exception &e) {
+          std::cerr << "Error processing column for table " << schema_name
+                    << "." << table_name << ": " << e.what() << std::endl;
+          continue;
+        } catch (...) {
+          std::cerr << "Unknown error processing column for table "
+                    << schema_name << "." << table_name << std::endl;
+          continue;
         }
-
-        createTableQuery += "`" + colName + "` " + mariaDataType + nullable;
-
-        if (!columnDefault.empty() &&
-            columnDefault.find("nextval") == std::string::npos) {
-          createTableQuery += " DEFAULT " + columnDefault;
-        }
-
-        if (!charSet.empty()) {
-          createTableQuery += " CHARACTER SET " + charSet;
-        }
-
-        if (!collation.empty()) {
-          std::string mariaCollation =
-              mapCollationToMariaDB(collation, charSet);
-          createTableQuery += " COLLATE " + mariaCollation;
-        }
-
-        createTableQuery += ", ";
       }
 
       if (hasColumns) {
         createTableQuery.erase(createTableQuery.size() - 2, 2);
+
+        if (!primaryKeyColumns.empty()) {
+          createTableQuery += ", PRIMARY KEY (";
+          for (size_t i = 0; i < primaryKeyColumns.size(); ++i) {
+            if (i > 0)
+              createTableQuery += ", ";
+            createTableQuery += "`" + primaryKeyColumns[i] + "`";
+          }
+          createTableQuery += ")";
+        }
+
         createTableQuery += ");";
-        cm.executeQueryMariaDB(mariadbConn.get(), createTableQuery);
+
+        try {
+          cm.executeQueryMariaDB(mariadbConn.get(), createTableQuery);
+        } catch (const std::exception &e) {
+          std::cerr << "✗ Error creating table " << schema_name << "."
+                    << table_name << ": " << e.what() << std::endl;
+        } catch (...) {
+          std::cerr << "✗ Unknown error creating table " << schema_name << "."
+                    << table_name << std::endl;
+        }
+      } else {
+        std::cerr << "Warning: No columns found for table " << schema_name
+                  << "." << table_name << ", skipping table creation"
+                  << std::endl;
+        continue;
       }
     }
   }
@@ -472,11 +601,28 @@ public:
 
       auto columns = cm.executeQueryPostgres(
           *postgresConn,
-          "SELECT column_name, data_type, is_nullable, column_default, "
-          "character_set_name, collation_name "
-          "FROM information_schema.columns "
-          "WHERE table_schema = '" +
-              schema_name + "' AND table_name = '" + table_name + "';");
+          "SELECT c.column_name, c.data_type, c.is_nullable, c.column_default, "
+          "c.character_set_name, c.collation_name, "
+          "CASE WHEN pk.column_name IS NOT NULL THEN 'YES' ELSE 'NO' END as "
+          "is_primary_key "
+          "FROM information_schema.columns c "
+          "LEFT JOIN ( "
+          "  SELECT ku.column_name "
+          "  FROM information_schema.table_constraints tc "
+          "  JOIN information_schema.key_column_usage ku "
+          "  ON tc.constraint_name = ku.constraint_name "
+          "  WHERE tc.constraint_type = 'PRIMARY KEY' "
+          "  AND tc.table_schema = '" +
+              schema_name +
+              "' "
+              "  AND tc.table_name = '" +
+              table_name +
+              "' "
+              ") pk ON c.column_name = pk.column_name "
+              "WHERE c.table_schema = '" +
+              schema_name + "' AND c.table_name = '" + table_name +
+              "' "
+              "ORDER BY c.ordinal_position;");
 
       if (columns.empty()) {
         updateStatus(*pgConn, schema_name, table_name, "error");
@@ -487,7 +633,7 @@ public:
       std::vector<std::string> columnTypes;
       std::vector<bool> columnNullable;
       for (const auto &col : columns) {
-        if (col.size() < 3) {
+        if (col.size() < 7) {
           continue;
         }
         columnNames.push_back(sanitizeColumnName(col[0].as<std::string>()));
@@ -579,17 +725,40 @@ public:
         checkQuery += ";";
 
         auto checkResult = cm.executeQueryPostgres(*postgresConn, checkQuery);
+        size_t newDataCount = 0;
+        if (!checkResult.empty() && !checkResult[0][0].is_null()) {
+          newDataCount = std::stoul(checkResult[0][0].as<std::string>());
+        }
+
         if (checkResult.empty() || checkResult[0][0].is_null() ||
-            std::stoul(checkResult[0][0].as<std::string>()) == 0) {
+            newDataCount == 0) {
           if (!table.last_sync_column.empty()) {
+            // For tables with last_sync_column, skip if no new data
+            continue;
           } else {
+            // For tables without last_sync_column, check if already synced
             if (!table.last_offset.empty() &&
                 std::stoul(table.last_offset) >= sourceCount) {
-              updateStatus(*pgConn, schema_name, table_name, "PERFECT MATCH",
-                           sourceCount);
+              // Verify that target actually has the data
+              auto mariadbConn = cm.connectMariaDB(table.connection_string);
+              if (mariadbConn) {
+                auto targetCountRes = cm.executeQueryMariaDB(
+                    mariadbConn.get(), "SELECT COUNT(*) FROM `" +
+                                           lowerSchemaName + "`.`" +
+                                           table_name + "`;");
+                size_t targetCount = 0;
+                if (!targetCountRes.empty() && !targetCountRes[0][0].empty()) {
+                  targetCount = std::stoul(targetCountRes[0][0]);
+                }
+                if (targetCount >= sourceCount) {
+                  updateStatus(*pgConn, schema_name, table_name,
+                               "PERFECT MATCH", sourceCount);
+                  continue;
+                }
+              }
             }
+            // Otherwise, proceed with sync
           }
-          continue;
         }
       }
 
@@ -618,8 +787,8 @@ public:
           selectQuery += " ORDER BY \"" + table.last_sync_column +
                          "\" ASC LIMIT " + std::to_string(CHUNK_SIZE) + ";";
         } else {
-          selectQuery += " LIMIT " + std::to_string(CHUNK_SIZE) + " OFFSET " +
-                         std::to_string(totalProcessed) + ";";
+          // For tables without last_sync_column, start from the beginning
+          selectQuery += " LIMIT " + std::to_string(CHUNK_SIZE) + " OFFSET 0;";
         }
 
         auto results = cm.executeQueryPostgres(*postgresConn, selectQuery);
@@ -817,19 +986,41 @@ public:
                   }
                 }
 
-                insertQuery += ") ON DUPLICATE KEY UPDATE ";
+                // Check if table has primary key
+                bool hasPrimaryKey = false;
+                for (const auto &col : columns) {
+                  if (col.size() >= 7 && col[6].as<std::string>() == "YES") {
+                    hasPrimaryKey = true;
+                    break;
+                  }
+                }
 
-                for (size_t i = 0; i < columnNames.size(); ++i) {
-                  if (i > 0)
-                    insertQuery += ", ";
-                  insertQuery += "`" + columnNames[i] + "` = VALUES(`" +
-                                 columnNames[i] + "`)";
+                if (hasPrimaryKey) {
+                  insertQuery += ") ON DUPLICATE KEY UPDATE ";
+
+                  for (size_t i = 0; i < columnNames.size(); ++i) {
+                    if (i > 0)
+                      insertQuery += ", ";
+                    insertQuery += "`" + columnNames[i] + "` = VALUES(`" +
+                                   columnNames[i] + "`)";
+                  }
+                } else {
+                  // For tables without primary key, use INSERT IGNORE to avoid
+                  // duplicates
+                  insertQuery += ")";
                 }
 
                 insertQuery += ";";
 
-                cm.executeQueryMariaDB(mariadbConn.get(), insertQuery);
-                rowsInserted++;
+                try {
+                  cm.executeQueryMariaDB(mariadbConn.get(), insertQuery);
+                  rowsInserted++;
+                } catch (const std::exception &e) {
+                  std::cerr << "✗ Error executing insert query: " << e.what()
+                            << std::endl;
+                  transactionSuccess = false;
+                  break;
+                }
               } else {
                 continue;
               }
@@ -964,7 +1155,7 @@ public:
 std::unordered_map<std::string, std::string> PostgresToMariaDB::dataTypeMap = {
     {"integer", "INT"},
     {"bigint", "BIGINT"},
-    {"character varying", "VARCHAR"},
+    {"character varying", "VARCHAR(255)"},
     {"text", "TEXT"},
     {"date", "DATE"},
     {"timestamp without time zone", "TIMESTAMP"},
@@ -976,7 +1167,7 @@ std::unordered_map<std::string, std::string> PostgresToMariaDB::dataTypeMap = {
     {"numeric", "DECIMAL"},
     {"boolean", "BOOLEAN"},
     {"smallint", "SMALLINT"},
-    {"character", "CHAR"},
+    {"character", "CHAR(1)"},
     {"bytea", "BLOB"},
     {"jsonb", "JSON"},
     {"json", "JSON"},
