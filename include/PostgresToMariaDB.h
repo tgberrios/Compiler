@@ -249,6 +249,11 @@ public:
       return value;
     }
 
+    // Handle MONEY type - remove $ symbol
+    if (pgDefault.front() == '$' && pgDefault.back() != '$') {
+      return pgDefault.substr(1); // Remove leading $
+    }
+
     return pgDefault;
   }
 
@@ -825,8 +830,61 @@ public:
                   break;
                 }
 
-                std::string value =
-                    row[i].is_null() ? "NULL" : row[i].as<std::string>();
+                std::string value;
+                if (row[i].is_null()) {
+                  value = "NULL";
+                } else {
+                  value = row[i].as<std::string>();
+                  std::string columnType =
+                      (i < columnTypes.size()) ? columnTypes[i] : "TEXT";
+
+                  // Handle MONEY type - remove $ symbol
+                  if (columnType.find("DECIMAL") != std::string::npos &&
+                      value.front() == '$') {
+                    value = value.substr(1); // Remove leading $
+                  }
+
+                  // Handle timezone in timestamps - remove timezone part
+                  if ((columnType == "TIMESTAMP" || columnType == "DATETIME") &&
+                      value.find('+') != std::string::npos) {
+                    size_t tzPos = value.find('+');
+                    if (tzPos != std::string::npos) {
+                      value = value.substr(0, tzPos);
+                    }
+                  }
+                  if ((columnType == "TIMESTAMP" || columnType == "DATETIME") &&
+                      value.find('-', 10) != std::string::npos) {
+                    size_t tzPos =
+                        value.find('-', 10); // Look for - after date part
+                    if (tzPos != std::string::npos) {
+                      value = value.substr(0, tzPos);
+                    }
+                  }
+
+                  // Don't quote numeric types, dates, timestamps, UUIDs, or
+                  // JSON
+                  if (columnType.find("INT") != std::string::npos ||
+                      columnType.find("FLOAT") != std::string::npos ||
+                      columnType.find("DOUBLE") != std::string::npos ||
+                      columnType.find("DECIMAL") != std::string::npos ||
+                      columnType == "BOOLEAN" || columnType == "BIT" ||
+                      columnType == "DATE" || columnType == "TIMESTAMP" ||
+                      columnType == "TIME" || columnType == "DATETIME" ||
+                      columnType.find("VARCHAR") != std::string::npos ||
+                      columnType == "JSON" ||
+                      columnType.find("longtext") != std::string::npos) {
+                    // Keep numeric and datetime values as-is
+                  } else {
+                    // Escape single quotes for SQL and quote string values
+                    size_t pos = 0;
+                    while ((pos = value.find("'", pos)) != std::string::npos) {
+                      value.replace(pos, 1, "''");
+                      pos += 2;
+                    }
+                    value = "'" + value + "'";
+                  }
+                }
+
                 std::string columnType =
                     (i < columnTypes.size()) ? columnTypes[i] : "TEXT";
 
@@ -1172,17 +1230,20 @@ std::unordered_map<std::string, std::string> PostgresToMariaDB::dataTypeMap = {
     {"jsonb", "JSON"},
     {"json", "JSON"},
     {"bit", "BIT"},
-    {"uuid", "VARCHAR(36)"},
+    {"uuid", "VARCHAR(255)"},
     {"point", "POINT"},
     {"line", "LINESTRING"},
     {"polygon", "POLYGON"},
     {"circle", "POLYGON"},
     {"path", "LINESTRING"},
     {"box", "POLYGON"},
-    {"interval", "VARCHAR"},
+    {"interval", "VARCHAR(50)"},
     {"money", "DECIMAL(19,4)"},
     {"cidr", "VARCHAR(43)"},
-    {"inet", "VARCHAR(43)"},
+    {"timestamp with time zone", "TIMESTAMP"},
+    {"time with time zone", "TIME"},
+    {"xml", "TEXT"},
+    {"inet", "VARCHAR(45)"},
     {"macaddr", "VARCHAR(17)"},
     {"tsvector", "TEXT"},
     {"tsquery", "TEXT"}};
