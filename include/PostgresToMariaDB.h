@@ -487,15 +487,62 @@ public:
             continue;
           }
 
-          // Si sourceCount = targetCount, ya están sincronizados
+          // Si sourceCount = targetCount, verificar si hay cambios
+          // incrementales
           if (sourceCount == targetCount) {
-            // Si tiene columna de tiempo, debe estar en LISTENING_CHANGES
+            // Si tiene columna de tiempo, verificar cambios incrementales
             if (!table.last_sync_column.empty()) {
-              std::cerr << "Source equals target with time column, setting "
-                           "LISTENING_CHANGES"
-                        << std::endl;
-              updateStatus(pgConn, schema_name, table_name, "LISTENING_CHANGES",
-                           targetCount);
+              // Obtener MAX de PostgreSQL y MariaDB para comparar
+              std::string pgMaxQuery =
+                  "SELECT MAX(\"" + table.last_sync_column + "\") FROM \"" +
+                  schema_name + "\".\"" + table_name + "\";";
+              std::string mariadbMaxQuery =
+                  "SELECT MAX(`" + table.last_sync_column + "`) FROM `" +
+                  lowerSchemaName + "`.`" + table_name + "`;";
+
+              try {
+                // Obtener MAX de PostgreSQL
+                pqxx::work txnPg(*sourcePgConn);
+                auto pgMaxRes = txnPg.exec(pgMaxQuery);
+                txnPg.commit();
+
+                std::string pgMaxTime = "";
+                if (!pgMaxRes.empty() && !pgMaxRes[0][0].is_null()) {
+                  pgMaxTime = pgMaxRes[0][0].as<std::string>();
+                }
+
+                // Obtener MAX de MariaDB
+                auto mariadbMaxRes =
+                    executeQueryMariaDB(mariadbConn.get(), mariadbMaxQuery);
+                std::string mariadbMaxTime = "";
+                if (!mariadbMaxRes.empty() && !mariadbMaxRes[0][0].empty()) {
+                  mariadbMaxTime = mariadbMaxRes[0][0];
+                }
+
+                std::cerr << "PostgreSQL MAX(" << table.last_sync_column
+                          << "): " << pgMaxTime << std::endl;
+                std::cerr << "MariaDB MAX(" << table.last_sync_column
+                          << "): " << mariadbMaxTime << std::endl;
+
+                // Si los MAX son iguales, están sincronizados
+                if (pgMaxTime == mariadbMaxTime) {
+                  std::cerr << "MAX times are equal, setting PERFECT_MATCH"
+                            << std::endl;
+                  updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
+                               targetCount);
+                } else {
+                  std::cerr << "MAX times differ, setting LISTENING_CHANGES "
+                               "for incremental sync"
+                            << std::endl;
+                  updateStatus(pgConn, schema_name, table_name,
+                               "LISTENING_CHANGES", targetCount);
+                }
+              } catch (const std::exception &e) {
+                std::cerr << "Error comparing MAX times: " << e.what()
+                          << std::endl;
+                updateStatus(pgConn, schema_name, table_name,
+                             "LISTENING_CHANGES", targetCount);
+              }
             } else {
               std::cerr << "Source equals target without time column, setting "
                            "PERFECT_MATCH"
@@ -694,7 +741,24 @@ public:
                              " LIMIT " + std::to_string(CHUNK_SIZE) +
                              " OFFSET " + std::to_string(sqlOffset) + ";";
             } else if (!table.last_sync_column.empty()) {
-              if (!table.last_sync_time.empty()) {
+              // Para sincronización incremental, usar el MAX de MariaDB como
+              // punto de partida
+              std::string mariadbMaxQuery =
+                  "SELECT MAX(`" + table.last_sync_column + "`) FROM `" +
+                  lowerSchemaName + "`.`" + table_name + "`;";
+              auto mariadbMaxRes =
+                  executeQueryMariaDB(mariadbConn.get(), mariadbMaxQuery);
+
+              if (!mariadbMaxRes.empty() && !mariadbMaxRes[0][0].empty()) {
+                std::string mariadbMaxTime = mariadbMaxRes[0][0];
+                std::cerr << "Using MariaDB MAX(" << table.last_sync_column
+                          << ") for incremental sync: " << mariadbMaxTime
+                          << std::endl;
+                selectQuery += " WHERE \"" + table.last_sync_column + "\" > '" +
+                               mariadbMaxTime + "'";
+              } else if (!table.last_sync_time.empty()) {
+                std::cerr << "Using last_sync_time for incremental sync: "
+                          << table.last_sync_time << std::endl;
                 selectQuery += " WHERE \"" + table.last_sync_column + "\" > '" +
                                table.last_sync_time + "'";
               }
