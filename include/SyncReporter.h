@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "ConnectionManager.h"
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <pqxx/pqxx>
@@ -20,6 +21,8 @@ public:
     size_t totalTables = 0;
     size_t perfectMatchCount = 0;
     size_t listeningChangesCount = 0;
+    size_t fullLoadActiveCount = 0;
+    size_t fullLoadInactiveCount = 0;
     size_t errorCount = 0;
     size_t totalSynchronized = 0;
     size_t totalErrors = 0;
@@ -31,6 +34,7 @@ public:
     std::string db_engine;
     std::string status;
     std::string last_offset;
+    bool active = true;
   };
 
   std::vector<TableStatus> getAllTableStatuses(pqxx::connection &pgConn) {
@@ -38,14 +42,13 @@ public:
     std::vector<TableStatus> tables;
 
     auto results = cm.executeQueryPostgres(
-        pgConn,
-        "SELECT schema_name, table_name, db_engine, status, last_offset "
-        "FROM metadata.catalog "
-        "WHERE active=true "
-        "ORDER BY db_engine, schema_name, table_name;");
+        pgConn, "SELECT schema_name, table_name, db_engine, status, "
+                "last_offset, active "
+                "FROM metadata.catalog "
+                "ORDER BY db_engine, schema_name, table_name;");
 
     for (const auto &row : results) {
-      if (row.size() < 5)
+      if (row.size() < 6)
         continue;
 
       TableStatus table;
@@ -54,6 +57,7 @@ public:
       table.db_engine = row[2].is_null() ? "" : row[2].as<std::string>();
       table.status = row[3].is_null() ? "" : row[3].as<std::string>();
       table.last_offset = row[4].is_null() ? "0" : row[4].as<std::string>();
+      table.active = row[5].is_null() ? false : row[5].as<bool>();
 
       tables.push_back(table);
     }
@@ -71,8 +75,13 @@ public:
       } else if (table.status == "LISTENING_CHANGES") {
         stats.listeningChangesCount++;
       } else if (table.status == "NO DATA") {
-        // NO DATA tables are considered successfully processed
         stats.perfectMatchCount++;
+      } else if (table.status == "full_load") {
+        if (table.active) {
+          stats.fullLoadActiveCount++;
+        } else {
+          stats.fullLoadInactiveCount++;
+        }
       } else if (table.status == "error") {
         stats.errorCount++;
       }
@@ -87,22 +96,17 @@ public:
 
   void printDashboard(const std::vector<TableStatus> &tables,
                       const SyncStats &stats) {
-    static int refreshCounter = 0;
-    refreshCounter++;
-    if (refreshCounter >= 120) {    // clear every ~120 prints
-      std::cout << "\033[2J\033[H"; // clear screen and move cursor home
-      refreshCounter = 0;
-    }
+    system("clear");
+    std::cout << std::flush;
 
-    // Overall Progress Bar
     double progress = (stats.totalTables > 0)
                           ? static_cast<double>(stats.totalSynchronized) /
                                 static_cast<double>(stats.totalTables)
                           : 0.0;
     int progressPercent = static_cast<int>(progress * 100.0);
-    int progressBars = static_cast<int>(progress * 30.0); // 30 characters wide
+    int progressBars = static_cast<int>(progress * 30.0);
 
-    std::cout << "\r\033[KDataSync Status:\n";
+    std::cout << "DataSync Status:\n";
     std::cout << "├─ Progress: ";
     for (int i = 0; i < 30; ++i) {
       if (i < progressBars) {
@@ -115,12 +119,15 @@ public:
     std::cout << "├─ Perfect Match: " << stats.perfectMatchCount << "\n";
     std::cout << "├─ Listening Changes: " << stats.listeningChangesCount
               << "\n";
+    std::cout << "├─ Full Load (Active): " << stats.fullLoadActiveCount << "\n";
+    std::cout << "├─ Full Load (Inactive): " << stats.fullLoadInactiveCount
+              << "\n";
     std::cout << "├─ Errors: " << stats.errorCount << "\n";
     std::cout << "├─ Processing Rate: " << calculateProcessingRate() << "\n";
     std::cout << "├─ Latency: " << calculateLatency() << "\n";
     std::cout << "├─ Chunk Size: " << SyncConfig::getChunkSize() << "\n";
     std::cout << "├─ Interval: " << SyncConfig::getSyncInterval() << "s\n";
-    std::cout << "└─ Time: " << getCurrentTimestamp() << std::flush;
+    std::cout << "└─ Time: " << getCurrentTimestamp() << std::endl;
   }
 
   void generateFullReport(pqxx::connection &pgConn) {

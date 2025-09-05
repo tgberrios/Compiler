@@ -2,18 +2,18 @@
 #define STREAMINGDATA_H
 
 #include "Config.h"
+#include "ConnectionManager.h"
 #include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
 #include "PostgresToMariaDB.h"
 #include "SyncReporter.h"
-#include "ConnectionManager.h"
 #include <atomic>
 #include <chrono>
 #include <future>
 #include <iostream>
+#include <pqxx/pqxx>
 #include <thread>
 #include <vector>
-#include <pqxx/pqxx>
 
 class StreamingData {
 public:
@@ -91,12 +91,12 @@ public:
   }
 
 private:
-  void loadChunkSizeFromDatabase(pqxx::connection& pgConn) {
+  void loadChunkSizeFromDatabase(pqxx::connection &pgConn) {
     try {
       ConnectionManager cm;
       auto results = cm.executeQueryPostgres(
           pgConn, "SELECT value FROM metadata.config WHERE key='chunk_size';");
-      
+
       if (!results.empty() && !results[0][0].is_null()) {
         size_t newChunkSize = std::stoul(results[0][0].as<std::string>());
         if (newChunkSize > 0 && newChunkSize != SyncConfig::getChunkSize()) {
@@ -104,26 +104,30 @@ private:
           std::cout << "Chunk size updated to: " << newChunkSize << std::endl;
         }
       }
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
       // Silently continue with current chunk size if config table doesn't exist
     }
   }
 
-  void loadSyncIntervalFromDatabase(pqxx::connection& pgConn) {
+  void loadSyncIntervalFromDatabase(pqxx::connection &pgConn) {
     try {
       ConnectionManager cm;
       auto results = cm.executeQueryPostgres(
-          pgConn, "SELECT value FROM metadata.config WHERE key='sync_interval';");
-      
+          pgConn,
+          "SELECT value FROM metadata.config WHERE key='sync_interval';");
+
       if (!results.empty() && !results[0][0].is_null()) {
         size_t newSyncInterval = std::stoul(results[0][0].as<std::string>());
-        if (newSyncInterval > 0 && newSyncInterval != SyncConfig::getSyncInterval()) {
+        if (newSyncInterval > 0 &&
+            newSyncInterval != SyncConfig::getSyncInterval()) {
           SyncConfig::setSyncInterval(newSyncInterval);
-          std::cout << "Sync interval updated to: " << newSyncInterval << " seconds" << std::endl;
+          std::cout << "Sync interval updated to: " << newSyncInterval
+                    << " seconds" << std::endl;
         }
       }
-    } catch (const std::exception& e) {
-      // Silently continue with current sync interval if config table doesn't exist
+    } catch (const std::exception &e) {
+      // Silently continue with current sync interval if config table doesn't
+      // exist
     }
   }
 };
