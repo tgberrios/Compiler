@@ -489,10 +489,20 @@ public:
 
           // Si sourceCount = targetCount, ya están sincronizados
           if (sourceCount == targetCount) {
-            std::cerr << "Source equals target, setting PERFECT_MATCH"
-                      << std::endl;
-            updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
-                         targetCount);
+            // Si tiene columna de tiempo, debe estar en LISTENING_CHANGES
+            if (!table.last_sync_column.empty()) {
+              std::cerr << "Source equals target with time column, setting "
+                           "LISTENING_CHANGES"
+                        << std::endl;
+              updateStatus(pgConn, schema_name, table_name, "LISTENING_CHANGES",
+                           targetCount);
+            } else {
+              std::cerr << "Source equals target without time column, setting "
+                           "PERFECT_MATCH"
+                        << std::endl;
+              updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
+                           targetCount);
+            }
             continue;
           }
 
@@ -660,6 +670,7 @@ public:
 
           const size_t CHUNK_SIZE = SyncConfig::getChunkSize();
           size_t totalProcessed = 0;
+          size_t sqlOffset = 0; // Offset para la consulta SQL
 
           // Para la nueva lógica de conteo, siempre empezamos desde 0
           // porque ya verificamos que sourceCount > targetCount
@@ -681,7 +692,7 @@ public:
                                   ? "1"
                                   : "\"" + table.last_sync_column + "\" ASC") +
                              " LIMIT " + std::to_string(CHUNK_SIZE) +
-                             " OFFSET " + std::to_string(totalProcessed) + ";";
+                             " OFFSET " + std::to_string(sqlOffset) + ";";
             } else if (!table.last_sync_column.empty()) {
               if (!table.last_sync_time.empty()) {
                 selectQuery += " WHERE \"" + table.last_sync_column + "\" > '" +
@@ -691,7 +702,7 @@ public:
                              "\" ASC LIMIT " + std::to_string(CHUNK_SIZE) + ";";
             } else {
               selectQuery += " LIMIT " + std::to_string(CHUNK_SIZE) +
-                             " OFFSET " + std::to_string(totalProcessed) + ";";
+                             " OFFSET " + std::to_string(sqlOffset) + ";";
             }
 
             std::cerr << "Executing select query: " << selectQuery << std::endl;
@@ -815,9 +826,9 @@ public:
                 }
                 finalCheck.close();
 
-                // Usar LOAD DATA INFILE para máxima eficiencia
+                // Usar LOAD DATA INFILE con IGNORE para manejar duplicados
                 std::string loadQuery =
-                    "LOAD DATA INFILE '" + tempFile + "' INTO TABLE `" +
+                    "LOAD DATA INFILE '" + tempFile + "' IGNORE INTO TABLE `" +
                     lowerSchemaName + "`.`" + table_name +
                     "` FIELDS TERMINATED BY '\\t' LINES TERMINATED BY '\\n' " +
                     "(" + columnsStr + ");";
@@ -869,7 +880,21 @@ public:
               std::cerr << "Error processing data: " << e.what() << std::endl;
             }
 
-            totalProcessed += rowsInserted;
+            // Obtener el conteo real de registros en MariaDB después de la
+            // inserción
+            auto countAfter = executeQueryMariaDB(
+                mariadbConn.get(), "SELECT COUNT(*) FROM `" + lowerSchemaName +
+                                       "`.`" + table_name + "`;");
+            size_t realTargetCount = 0;
+            if (!countAfter.empty() && !countAfter[0][0].empty()) {
+              realTargetCount = std::stoul(countAfter[0][0]);
+            }
+
+            // Actualizar totalProcessed con el conteo real
+            totalProcessed = realTargetCount;
+
+            // Actualizar sqlOffset para la siguiente consulta
+            sqlOffset += rowsInserted;
 
             if (table.status == "FULL_LOAD") {
               updateStatus(pgConn, schema_name, table_name, "FULL_LOAD",
@@ -879,14 +904,38 @@ public:
                            totalProcessed);
             }
 
+            // Verificar si hemos completado la transferencia basándose en el
+            // conteo real
             if (totalProcessed >= sourceCount) {
               hasMoreData = false;
             }
           }
 
-          if (totalProcessed >= sourceCount && table.status == "full_load") {
-            updateStatus(pgConn, schema_name, table_name, "LISTENING_CHANGES",
-                         totalProcessed);
+          // Al finalizar la transferencia, determinar el estado correcto
+          if (totalProcessed >= sourceCount) {
+            if (table.status == "FULL_LOAD") {
+              // Si tiene columna de tiempo, debe estar en LISTENING_CHANGES
+              if (!table.last_sync_column.empty()) {
+                std::cerr << "Full load completed with time column, setting "
+                             "LISTENING_CHANGES"
+                          << std::endl;
+                updateStatus(pgConn, schema_name, table_name,
+                             "LISTENING_CHANGES", totalProcessed);
+              } else {
+                std::cerr << "Full load completed without time column, setting "
+                             "PERFECT_MATCH"
+                          << std::endl;
+                updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
+                             totalProcessed);
+              }
+            } else {
+              // Para LISTENING_CHANGES, mantener el estado
+              std::cerr
+                  << "Incremental sync completed, maintaining LISTENING_CHANGES"
+                  << std::endl;
+              updateStatus(pgConn, schema_name, table_name, "LISTENING_CHANGES",
+                           totalProcessed);
+            }
           }
         } catch (const std::exception &e) {
           std::cerr << "Error processing table " << schema_name << "."
@@ -904,11 +953,36 @@ public:
                     size_t offset = 0) {
     try {
       pqxx::work txn(pgConn);
-      txn.exec("UPDATE metadata.catalog SET status='" + status +
-               "', last_offset='" + std::to_string(offset) +
-               "', last_sync_time=NOW() WHERE schema_name='" +
-               escapeSQL(schema_name) + "' AND table_name='" +
-               escapeSQL(table_name) + "';");
+
+      // Obtener la columna de tiempo para calcular el max
+      auto columnQuery =
+          txn.exec("SELECT last_sync_column FROM metadata.catalog "
+                   "WHERE schema_name='" +
+                   escapeSQL(schema_name) + "' AND table_name='" +
+                   escapeSQL(table_name) + "';");
+
+      std::string lastSyncColumn = "";
+      if (!columnQuery.empty() && !columnQuery[0][0].is_null()) {
+        lastSyncColumn = columnQuery[0][0].as<std::string>();
+      }
+
+      std::string updateQuery = "UPDATE metadata.catalog SET status='" +
+                                status + "', last_offset='" +
+                                std::to_string(offset) + "'";
+
+      // Si tiene columna de tiempo, usar MAX de esa columna, sino NOW()
+      if (!lastSyncColumn.empty()) {
+        updateQuery += ", last_sync_time=(SELECT MAX(\"" + lastSyncColumn +
+                       "\") FROM \"" + schema_name + "\".\"" + table_name +
+                       "\")";
+      } else {
+        updateQuery += ", last_sync_time=NOW()";
+      }
+
+      updateQuery += " WHERE schema_name='" + escapeSQL(schema_name) +
+                     "' AND table_name='" + escapeSQL(table_name) + "';";
+
+      txn.exec(updateQuery);
       txn.commit();
     } catch (const std::exception &e) {
       std::cerr << "Error updating status: " << e.what() << std::endl;
