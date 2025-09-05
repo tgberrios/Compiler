@@ -35,3 +35,5 @@ UPDATE metadata.catalog SET active=false WHERE schema_name='schema' AND table_na
 ```
 
 cmake . && make
+
+sudo mkdir -p /opt/datasync_temp && sudo chmod 777 /opt/datasync_temp

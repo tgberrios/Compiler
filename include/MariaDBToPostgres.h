@@ -2,15 +2,14 @@
 #define MARIADBTOPOSTGRES_H
 
 #include "Config.h"
-#include "ConnectionManager.h"
 #include "SyncReporter.h"
 #include <algorithm>
 #include <atomic>
 #include <iostream>
+#include <mysql/mysql.h>
 #include <pqxx/pqxx>
-
+#include <sstream>
 #include <string>
-
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -35,1307 +34,707 @@ public:
     std::string last_offset;
   };
 
-  void syncCatalogMariaDBToPostgres() {
-    ConnectionManager cm;
-
-    auto pgConn =
-        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
-
-    // Check if catalog sync was already done recently (within last 5 minutes)
-    // We'll check this per connection instead of globally
-
-    std::cout << "• MariaDB Sync" << std::endl;
-
-    std::vector<std::string> mariaConnStrings;
-    auto results = cm.executeQueryPostgres(
-        *pgConn, "SELECT connection_string FROM metadata.catalog "
-                 "WHERE db_engine='MariaDB' AND active=true;");
-    for (const auto &row : results) {
-      if (row.size() >= 1) {
-        try {
-          mariaConnStrings.push_back(row[0].as<std::string>());
-        } catch (const std::exception &e) {
-          std::cerr << "Error processing connection string row: " << e.what()
-                    << std::endl;
-          continue;
-        } catch (...) {
-          std::cerr
-              << "Unknown error processing connection string row, skipping"
-              << std::endl;
-          continue;
-        }
-      }
-    }
-
-    if (mariaConnStrings.empty()) {
-      return;
-    }
-
-    for (const auto &connStr : mariaConnStrings) {
-      // Check if this specific connection was already processed recently
-      auto connectionCheck = cm.executeQueryPostgres(
-          *pgConn, "SELECT COUNT(*) FROM metadata.catalog "
-                   "WHERE connection_string='" +
-                       cm.escapeSQL(connStr) +
-                       "' AND db_engine='MariaDB' AND active=true "
-                       "AND last_sync_time > NOW() - INTERVAL '5 minutes';");
-
-      if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
-        int connectionCount = connectionCheck[0][0].as<int>();
-        if (connectionCount > 0) {
-          continue;
-        }
-      }
-
-      auto conn = cm.connectMariaDB(connStr);
-      if (!conn) {
-        std::cerr << "✗ Failed to connect to MariaDB: " << connStr << std::endl;
-        continue;
-      }
-
-      auto tables = cm.executeQueryMariaDB(
-          conn.get(),
-          "SELECT table_schema, table_name "
-          "FROM information_schema.tables "
-          "WHERE table_schema NOT IN "
-          "('mysql','information_schema','sys','performance_schema');");
-
-      size_t newTablesCount = 0;
-      size_t existingTablesCount = 0;
-
-      for (const auto &row : tables) {
-        if (row.size() < 2)
-          continue;
-
-        const std::string &schema_name = row[0];
-        const std::string &table_name = row[1];
-
-        // Check if table already exists in catalog
-        auto existingCheck = cm.executeQueryPostgres(
-            *pgConn, "SELECT COUNT(*) FROM metadata.catalog "
-                     "WHERE schema_name='" +
-                         cm.escapeSQL(schema_name) + "' AND table_name='" +
-                         cm.escapeSQL(table_name) +
-                         "' AND db_engine='MariaDB';");
-
-        if (!existingCheck.empty() && !existingCheck[0][0].is_null()) {
-          int count = existingCheck[0][0].as<int>();
-          if (count > 0) {
-            existingTablesCount++;
-            continue; // Skip existing tables
-          }
-        }
-
-        newTablesCount++;
-
-        try {
-
-          auto columns = cm.executeQueryMariaDB(
-              conn.get(), "SELECT COLUMN_NAME FROM information_schema.columns "
-                          "WHERE table_schema='" +
-                              schema_name + "' AND table_name='" + table_name +
-                              "';");
-
-          std::string lastSyncColumn;
-
-          for (const auto &col : columns) {
-            if (col.size() < 1)
-              continue;
-            std::string colName = col[0];
-
-            if (colName == "updated_at") {
-              lastSyncColumn = colName;
-              break;
-            }
-
-            if (colName.length() > 3 &&
-                colName.substr(colName.length() - 3) == "_at") {
-              if (lastSyncColumn.empty()) {
-                lastSyncColumn = colName;
-              }
-            }
-          }
-
-          try {
-            pqxx::work txn(*pgConn);
-            std::string query =
-                "INSERT INTO metadata.catalog "
-                "(schema_name, table_name, db_engine, connection_string, "
-                "active, "
-                "last_offset, status, last_sync_column) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
-                "ON CONFLICT (schema_name, table_name) DO NOTHING;";
-
-            txn.exec_params(query, schema_name, table_name, "MariaDB", connStr,
-                            "YES", 0, "full_load", lastSyncColumn);
-            txn.commit();
-
-          } catch (const std::exception &e) {
-            std::cerr << "✗ Error inserting catalog entry for " << schema_name
-                      << "." << table_name << ": " << e.what() << std::endl;
-          }
-        } catch (const std::exception &e) {
-          std::cerr << "✗ Error processing table " << schema_name << "."
-                    << table_name << ": " << e.what() << std::endl;
-          continue;
-        } catch (...) {
-          std::cerr << "✗ Unknown error processing table " << schema_name << "."
-                    << table_name << std::endl;
-          continue;
-        }
-      }
-
-      // Update last_sync_time for this specific connection to mark completion
-      try {
-        pqxx::work txn(*pgConn);
-        txn.exec_params("UPDATE metadata.catalog SET last_sync_time = NOW() "
-                        "WHERE connection_string=$1 AND db_engine='MariaDB' "
-                        "AND active=true;",
-                        connStr);
-        txn.commit();
-      } catch (const std::exception &e) {
-        std::cerr << "Error updating last_sync_time for connection: "
-                  << e.what() << std::endl;
-      }
-    }
-  }
-
   std::vector<TableInfo> getActiveTables(pqxx::connection &pgConn) {
-    ConnectionManager cm;
     std::vector<TableInfo> data;
 
-    auto results = cm.executeQueryPostgres(
-        pgConn, "SELECT schema_name, table_name, cluster_name, db_engine, "
-                "connection_string, last_sync_time, last_sync_column, "
-                "status, last_offset "
-                "FROM metadata.catalog "
-                "WHERE active=true AND db_engine='MariaDB' "
-                "ORDER BY schema_name, table_name;");
+    try {
+      pqxx::work txn(pgConn);
+      auto results =
+          txn.exec("SELECT schema_name, table_name, cluster_name, db_engine, "
+                   "connection_string, last_sync_time, last_sync_column, "
+                   "status, last_offset "
+                   "FROM metadata.catalog "
+                   "WHERE active=true AND db_engine='MariaDB' "
+                   "ORDER BY schema_name, table_name;");
+      txn.commit();
 
-    for (const auto &row : results) {
-      if (row.size() < 9) {
-        continue;
-      }
+      for (const auto &row : results) {
+        if (row.size() < 9)
+          continue;
 
-      try {
         TableInfo t;
-
-        auto safeGetString = [&row](size_t index,
-                                    const std::string &defaultValue = "") {
-          return row[index].is_null() ? defaultValue
-                                      : row[index].as<std::string>();
-        };
-
-        t.schema_name = safeGetString(0);
-        t.table_name = safeGetString(1);
-        t.cluster_name = safeGetString(2);
-        t.db_engine = safeGetString(3);
-        t.connection_string = safeGetString(4);
-        t.last_sync_time = safeGetString(5);
-        t.last_sync_column = safeGetString(6);
-        t.status = safeGetString(7);
-        t.last_offset = safeGetString(8, "0");
-
+        t.schema_name = row[0].is_null() ? "" : row[0].as<std::string>();
+        t.table_name = row[1].is_null() ? "" : row[1].as<std::string>();
+        t.cluster_name = row[2].is_null() ? "" : row[2].as<std::string>();
+        t.db_engine = row[3].is_null() ? "" : row[3].as<std::string>();
+        t.connection_string = row[4].is_null() ? "" : row[4].as<std::string>();
+        t.last_sync_time = row[5].is_null() ? "" : row[5].as<std::string>();
+        t.last_sync_column = row[6].is_null() ? "" : row[6].as<std::string>();
+        t.status = row[7].is_null() ? "" : row[7].as<std::string>();
+        t.last_offset = row[8].is_null() ? "" : row[8].as<std::string>();
         data.push_back(t);
-      } catch (const std::exception &e) {
-        continue;
-      } catch (...) {
-        continue;
       }
+    } catch (const std::exception &e) {
+      std::cerr << "Error getting active tables: " << e.what() << std::endl;
     }
+
     return data;
   }
 
-  std::string mapCollationToPostgres(const std::string &mariaCollation,
-                                     const std::string &charSet) {
-    if (!mariaCollation.empty() && collationMap.count(mariaCollation)) {
-      return collationMap[mariaCollation];
-    }
+  void syncCatalogMariaDBToPostgres() {
+    try {
+      pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
 
-    if (mariaCollation.empty()) {
-      static const std::unordered_set<std::string> unicodeCharsets = {
-          "utf8mb4", "utf8", "latin1"};
-      return unicodeCharsets.count(charSet) ? "en_US" : "C";
-    }
+      std::vector<std::string> mariaConnStrings;
+      {
+        pqxx::work txn(pgConn);
+        auto results =
+            txn.exec("SELECT connection_string FROM metadata.catalog "
+                     "WHERE db_engine='MariaDB' AND active=true;");
+        txn.commit();
 
-    static const std::unordered_map<std::string, std::string>
-        collationPatterns = {{"utf8mb4_unicode_ci", "en_US"},
-                             {"utf8mb4_general_ci", "en_US"},
-                             {"utf8_unicode_ci", "en_US"},
-                             {"utf8_general_ci", "en_US"},
-                             {"latin1_swedish_ci", "en_US"},
-                             {"latin1_general_ci", "en_US"},
-                             {"binary", "C"},
-                             {"ascii", "C"}};
-
-    for (const auto &[pattern, result] : collationPatterns) {
-      if (mariaCollation.find(pattern) != std::string::npos) {
-        return result;
+        for (const auto &row : results) {
+          if (row.size() >= 1) {
+            mariaConnStrings.push_back(row[0].as<std::string>());
+          }
+        }
       }
+
+      if (mariaConnStrings.empty()) {
+        std::cerr << "No MariaDB connections found" << std::endl;
+        return;
+      }
+
+      for (const auto &connStr : mariaConnStrings) {
+        {
+          pqxx::work txn(pgConn);
+          auto connectionCheck =
+              txn.exec("SELECT COUNT(*) FROM metadata.catalog "
+                       "WHERE connection_string='" +
+                       escapeSQL(connStr) +
+                       "' AND db_engine='MariaDB' AND active=true "
+                       "AND last_sync_time > NOW() - INTERVAL '5 minutes';");
+          txn.commit();
+
+          if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
+            int connectionCount = connectionCheck[0][0].as<int>();
+            if (connectionCount > 0)
+              continue;
+          }
+        }
+
+        auto activeTables = getActiveTables(pgConn);
+
+        for (const auto &table : activeTables) {
+          try {
+            auto mariaConn = connectMariaDB(table.connection_string);
+            if (!mariaConn) {
+              std::cerr << "Failed to connect to MariaDB for table: "
+                        << table.schema_name << "." << table.table_name
+                        << std::endl;
+              continue;
+            }
+
+            {
+              pqxx::work txn(pgConn);
+              txn.exec("UPDATE metadata.catalog SET last_sync_time = NOW() "
+                       "WHERE schema_name = '" +
+                       escapeSQL(table.schema_name) + "' AND table_name = '" +
+                       escapeSQL(table.table_name) +
+                       "' AND connection_string = '" +
+                       escapeSQL(table.connection_string) + "';");
+              txn.commit();
+            }
+
+          } catch (const std::exception &e) {
+            std::cerr << "Error syncing table " << table.schema_name << "."
+                      << table.table_name << ": " << e.what() << std::endl;
+          }
+        }
+      }
+    } catch (const std::exception &e) {
+      std::cerr << "Error in syncCatalogMariaDBToPostgres: " << e.what()
+                << std::endl;
     }
-
-    return "en_US";
-  }
-
-  std::string sanitizeColumnName(const std::string &name) {
-    std::string sanitized = name;
-    std::transform(sanitized.begin(), sanitized.end(), sanitized.begin(),
-                   ::tolower);
-
-    static const std::unordered_map<std::string, std::string> reservedWords = {
-        {"pin", "pin_column"},       {"profile", "profile_column"},
-        {"brandfrom", "brand_from"}, {"brandto", "brand_to"},
-        {"type", "type_column"},     {"order", "order_column"},
-        {"group", "group_column"},   {"key", "key_column"},
-        {"user", "user_column"},     {"comment", "comment_column"},
-        {"status", "status_column"}, {"date", "date_column"},
-        {"time", "time_column"},     {"name", "name_column"},
-        {"value", "value_column"},   {"id", "id_column"},
-        {"from", "from_column"},     {"to", "to_column"}};
-
-    auto it = reservedWords.find(sanitized);
-    return (it != reservedWords.end()) ? it->second : sanitized;
   }
 
   void syncIndexesAndConstraints(const std::string &schema_name,
                                  const std::string &table_name,
                                  MYSQL *mariadbConn, pqxx::connection &pgConn,
                                  const std::string &lowerSchemaName) {
-    ConnectionManager cm;
+    std::string query = "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME "
+                        "FROM information_schema.statistics "
+                        "WHERE table_schema = '" +
+                        schema_name + "' AND table_name = '" + table_name +
+                        "' AND INDEX_NAME != 'PRIMARY' "
+                        "ORDER BY INDEX_NAME, SEQ_IN_INDEX;";
 
-    std::string indexQuery =
-        "SELECT INDEX_NAME, INDEX_TYPE, NON_UNIQUE, COLUMN_NAME, SEQ_IN_INDEX "
-        "FROM information_schema.statistics "
-        "WHERE table_schema = '" +
-        schema_name + "' AND table_name = '" + table_name +
-        "' "
-        "ORDER BY INDEX_NAME, SEQ_IN_INDEX;";
+    auto results = executeQueryMariaDB(mariadbConn, query);
 
-    auto indexes = cm.executeQueryMariaDB(mariadbConn, indexQuery);
-
-    std::unordered_map<std::string, std::vector<std::string>> indexColumns;
-    std::vector<std::string> primaryKeys;
-    std::vector<std::string> uniqueIndexes;
-    std::vector<std::string> regularIndexes;
-
-    for (const auto &row : indexes) {
-      if (row.size() < 5)
+    for (const auto &row : results) {
+      if (row.size() < 3)
         continue;
 
       std::string indexName = row[0];
-      std::string indexType = row[1];
-      std::string nonUnique = row[2];
-      std::string columnName = sanitizeColumnName(row[3]);
-      std::string seqInIndex = row[4];
+      std::string nonUnique = row[1];
+      std::string columnName = row[2];
+      std::transform(columnName.begin(), columnName.end(), columnName.begin(),
+                     ::tolower);
 
-      if (indexName == "PRIMARY") {
-        primaryKeys.push_back(columnName);
-      } else if (nonUnique == "0") {
-        uniqueIndexes.push_back(indexName);
-        indexColumns[indexName].push_back(columnName);
-      } else {
-        regularIndexes.push_back(indexName);
-        indexColumns[indexName].push_back(columnName);
-      }
-    }
-
-    for (const auto &uniqueIndex : uniqueIndexes) {
-      std::string createUniqueQuery =
-          "CREATE UNIQUE INDEX IF NOT EXISTS \"" + uniqueIndex + "\" ON \"" +
-          lowerSchemaName + "\".\"" + table_name + "\" (";
-
-      for (size_t i = 0; i < indexColumns[uniqueIndex].size(); ++i) {
-        if (i > 0)
-          createUniqueQuery += ", ";
-        createUniqueQuery += "\"" + indexColumns[uniqueIndex][i] + "\"";
-      }
-      createUniqueQuery += ");";
+      std::string createQuery = "CREATE ";
+      if (nonUnique == "0")
+        createQuery += "UNIQUE ";
+      createQuery += "INDEX IF NOT EXISTS \"" + indexName + "\" ON \"" +
+                     lowerSchemaName + "\".\"" + table_name + "\" (\"" +
+                     columnName + "\");";
 
       try {
-        cm.executeQueryPostgres(pgConn, createUniqueQuery);
-        std::cout << "  ✓ Unique index '" + uniqueIndex + "' created"
+        pqxx::work txn(pgConn);
+        txn.exec(createQuery);
+        txn.commit();
+      } catch (const std::exception &e) {
+        std::cerr << "Error creating index '" << indexName << "': " << e.what()
                   << std::endl;
-      } catch (const std::exception &e) {
-        std::cerr << "  ✗ Error creating unique index '" + uniqueIndex + "': "
-                  << e.what() << std::endl;
-      }
-    }
-
-    for (const auto &regularIndex : regularIndexes) {
-      std::string createIndexQuery =
-          "CREATE INDEX IF NOT EXISTS \"" + regularIndex + "\" ON \"" +
-          lowerSchemaName + "\".\"" + table_name + "\" (";
-
-      for (size_t i = 0; i < indexColumns[regularIndex].size(); ++i) {
-        if (i > 0)
-          createIndexQuery += ", ";
-        createIndexQuery += "\"" + indexColumns[regularIndex][i] + "\"";
-      }
-      createIndexQuery += ");";
-
-      try {
-        cm.executeQueryPostgres(pgConn, createIndexQuery);
-        std::cout << "  ✓ Index '" + regularIndex + "' created" << std::endl;
-      } catch (const std::exception &e) {
-        std::cerr << "  ✗ Error creating index '" + regularIndex + "': "
-                  << e.what() << std::endl;
       }
     }
   }
 
   void setupTableTargetMariaDBToPostgres() {
-    ConnectionManager cm;
+    try {
+      pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
+      auto tables = getActiveTables(pgConn);
 
-    auto pgConn =
-        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
-
-    auto tables = getActiveTables(*pgConn);
-
-    for (const auto &table : tables) {
-      std::string schema_name = table.schema_name;
-      std::string table_name = table.table_name;
-
-      std::unique_ptr<MYSQL, void (*)(MYSQL *)> mariadbConn(nullptr,
-                                                            mysql_close);
-      if (table.db_engine == "MariaDB") {
-        mariadbConn = cm.connectMariaDB(table.connection_string);
-        if (!mariadbConn) {
+      for (const auto &table : tables) {
+        if (table.db_engine != "MariaDB")
           continue;
+
+        auto mariadbConn = connectMariaDB(table.connection_string);
+        if (!mariadbConn)
+          continue;
+
+        std::string query = "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, "
+                            "COLUMN_KEY, EXTRA, CHARACTER_MAXIMUM_LENGTH "
+                            "FROM information_schema.columns "
+                            "WHERE table_schema = '" +
+                            table.schema_name + "' AND table_name = '" +
+                            table.table_name + "';";
+
+        auto columns = executeQueryMariaDB(mariadbConn.get(), query);
+
+        std::string lowerSchema = table.schema_name;
+        std::transform(lowerSchema.begin(), lowerSchema.end(),
+                       lowerSchema.begin(), ::tolower);
+
+        {
+          pqxx::work txn(pgConn);
+          txn.exec("CREATE SCHEMA IF NOT EXISTS \"" + lowerSchema + "\";");
+          txn.commit();
         }
-      } else {
-        continue;
-      }
 
-      std::string obtainColumnsQuery =
-          "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, "
-          "COLLATION_NAME, CHARACTER_SET_NAME, CHARACTER_MAXIMUM_LENGTH "
-          "FROM information_schema.columns "
-          "WHERE table_schema = '" +
-          schema_name + "' AND table_name = '" + table_name + "';";
+        std::string createQuery = "CREATE TABLE IF NOT EXISTS \"" +
+                                  lowerSchema + "\".\"" + table.table_name +
+                                  "\" (";
+        std::vector<std::string> primaryKeys;
+        std::string detectedTimeColumn = "";
 
-      auto columns =
-          cm.executeQueryMariaDB(mariadbConn.get(), obtainColumnsQuery);
+        for (const auto &col : columns) {
+          if (col.size() < 6)
+            continue;
 
-      std::string lowerSchemaName = schema_name;
-      std::transform(lowerSchemaName.begin(), lowerSchemaName.end(),
-                     lowerSchemaName.begin(), ::tolower);
-      // Create schema (PostgreSQL doesn't support COLLATE in CREATE SCHEMA)
-      cm.executeQueryPostgres(*pgConn, "CREATE SCHEMA IF NOT EXISTS \"" +
-                                           lowerSchemaName + "\";");
+          std::string colName = col[0];
+          std::transform(colName.begin(), colName.end(), colName.begin(),
+                         ::tolower);
+          std::string dataType = col[1];
+          std::string nullable = (col[2] == "YES") ? "" : " NOT NULL";
+          std::string columnKey = col[3];
+          std::string extra = col[4];
+          std::string maxLength = col[5];
 
-      std::string createTableQuery = "CREATE TABLE IF NOT EXISTS \"" +
-                                     lowerSchemaName + "\".\"" + table_name +
-                                     "\" (";
-      bool hasColumns = false;
-      std::vector<std::string> primaryKeyColumns;
-
-      for (const auto &col : columns) {
-        if (col.size() < 8)
-          continue;
-        hasColumns = true;
-        std::string colName = sanitizeColumnName(col[0]);
-        std::string dataType = col[1];
-        std::string nullable = (col[2] == "YES") ? "" : " NOT NULL";
-        std::string columnKey = col[3];
-        std::string extra = col[4];
-        std::string collation = col[5];
-        std::string charSet = col[6];
-        std::string maxLength = col[7];
-
-        std::string pgDataType;
-        if (extra == "auto_increment") {
-          if (dataType == "int")
-            pgDataType = "INTEGER";
-          else if (dataType == "bigint")
-            pgDataType = "BIGINT";
-          else
-            pgDataType = "INTEGER";
-        } else {
-          if (dataType == "timestamp" || dataType == "datetime") {
-            pgDataType = "TIMESTAMP";
+          std::string pgType = "TEXT";
+          if (extra == "auto_increment") {
+            pgType = (dataType == "bigint") ? "BIGINT" : "INTEGER";
+          } else if (dataType == "timestamp" || dataType == "datetime") {
+            pgType = "TIMESTAMP";
           } else if (dataType == "date") {
-            pgDataType = "DATE";
+            pgType = "DATE";
           } else if (dataType == "time") {
-            pgDataType = "TIME";
-          } else if (dataType == "char") {
-            if (!maxLength.empty() && maxLength != "NULL") {
-              pgDataType = "CHAR(" + maxLength + ")";
-            } else {
-              pgDataType = "VARCHAR(255)"; // Cambiar CHAR(1) por VARCHAR(255)
-                                           // para evitar errores
+            pgType = "TIME";
+          } else if (dataType == "char" || dataType == "varchar") {
+            pgType = (!maxLength.empty() && maxLength != "NULL")
+                         ? dataType + "(" + maxLength + ")"
+                         : "VARCHAR";
+          } else if (dataTypeMap.count(dataType)) {
+            pgType = dataTypeMap[dataType];
+          }
+
+          createQuery += "\"" + colName + "\" " + pgType + nullable;
+          if (columnKey == "PRI")
+            primaryKeys.push_back(colName);
+          createQuery += ", ";
+
+          // Detectar columna de tiempo con priorización
+          if (detectedTimeColumn.empty() &&
+              (dataType == "timestamp" || dataType == "datetime")) {
+            if (colName == "updated_at") {
+              detectedTimeColumn = colName;
+            } else if (colName == "created_at" &&
+                       detectedTimeColumn != "updated_at") {
+              detectedTimeColumn = colName;
+            } else if (colName.find("_at") != std::string::npos &&
+                       detectedTimeColumn != "updated_at" &&
+                       detectedTimeColumn != "created_at") {
+              detectedTimeColumn = colName;
             }
-          } else if (dataType == "varchar") {
-            if (!maxLength.empty() && maxLength != "NULL") {
-              pgDataType = "VARCHAR(" + maxLength + ")";
-            } else {
-              pgDataType = "VARCHAR";
-            }
-          } else {
-            pgDataType =
-                dataTypeMap.count(dataType) ? dataTypeMap[dataType] : "TEXT";
           }
         }
 
-        createTableQuery += "\"" + colName + "\" " + pgDataType + nullable;
-
-        // Add collation for text-based types
-        if (pgDataType.find("VARCHAR") == 0 || pgDataType == "TEXT" ||
-            pgDataType.find("CHAR") == 0) {
-          std::string pgCollation = mapCollationToPostgres(collation, charSet);
-          createTableQuery += " COLLATE \"" + pgCollation + "\"";
-        }
-
-        if (columnKey == "PRI") {
-          primaryKeyColumns.push_back(colName);
-        }
-        createTableQuery += ", ";
-      }
-
-      if (hasColumns) {
-        if (!primaryKeyColumns.empty()) {
-          createTableQuery += "PRIMARY KEY (";
-          for (size_t i = 0; i < primaryKeyColumns.size(); ++i) {
-            createTableQuery += "\"" + primaryKeyColumns[i] + "\"";
-            if (i < primaryKeyColumns.size() - 1)
-              createTableQuery += ", ";
+        if (!primaryKeys.empty()) {
+          createQuery += "PRIMARY KEY (";
+          for (size_t i = 0; i < primaryKeys.size(); ++i) {
+            createQuery += "\"" + primaryKeys[i] + "\"";
+            if (i < primaryKeys.size() - 1)
+              createQuery += ", ";
           }
-          createTableQuery += ")";
+          createQuery += ")";
         } else {
-          createTableQuery.erase(createTableQuery.size() - 2, 2);
+          createQuery.erase(createQuery.size() - 2, 2);
         }
-        createTableQuery += ");";
-        cm.executeQueryPostgres(*pgConn, createTableQuery);
+        createQuery += ");";
+
+        {
+          pqxx::work txn(pgConn);
+          txn.exec(createQuery);
+          txn.commit();
+        }
+
+        // Guardar columna de tiempo detectada en metadata.catalog
+        if (!detectedTimeColumn.empty()) {
+
+          pqxx::work txn(pgConn);
+          txn.exec("UPDATE metadata.catalog SET last_sync_column='" +
+                   escapeSQL(detectedTimeColumn) + "' WHERE schema_name='" +
+                   escapeSQL(table.schema_name) + "' AND table_name='" +
+                   escapeSQL(table.table_name) + "' AND db_engine='MariaDB';");
+          txn.commit();
+        } else {
+        }
       }
+    } catch (const std::exception &e) {
+      std::cerr << "Error in setupTableTargetMariaDBToPostgres: " << e.what()
+                << std::endl;
     }
   }
 
   void transferDataMariaDBToPostgres() {
-    ConnectionManager cm;
-    auto pgConn =
-        cm.connectPostgres(DatabaseConfig::getPostgresConnectionString());
+    try {
+      pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
+      auto tables = getActiveTables(pgConn);
 
-    auto tables = getActiveTables(*pgConn);
-    size_t totalTables = tables.size();
-    size_t processedTables = 0;
-    size_t skippedTables = 0;
-    size_t syncedTables = 0;
+      for (auto &table : tables) {
+        if (table.db_engine != "MariaDB")
+          continue;
 
-    for (auto &table : tables) {
-      if (table.status == "full_load") {
-        // NO resetear last_offset - continuar desde donde se quedó
-      }
-
-      std::string schema_name = table.schema_name;
-      std::string table_name = table.table_name;
-      std::string lowerSchemaName = schema_name;
-      std::transform(lowerSchemaName.begin(), lowerSchemaName.end(),
-                     lowerSchemaName.begin(), ::tolower);
-
-      std::unique_ptr<MYSQL, void (*)(MYSQL *)> mariadbConn(nullptr,
-                                                            mysql_close);
-      if (table.db_engine == "MariaDB") {
-        mariadbConn = cm.connectMariaDB(table.connection_string);
+        auto mariadbConn = connectMariaDB(table.connection_string);
         if (!mariadbConn) {
-          updateStatus(*pgConn, schema_name, table_name, "error");
+          updateStatus(pgConn, table.schema_name, table.table_name, "ERROR");
           continue;
         }
-      } else {
-        updateStatus(*pgConn, schema_name, table_name, "error");
-        continue;
-      }
 
-      auto countRes = cm.executeQueryMariaDB(
-          mariadbConn.get(),
-          "SELECT COUNT(*) FROM `" + schema_name + "`.`" + table_name + "`;");
-      size_t sourceCount = 0;
-      if (!countRes.empty() && !countRes[0][0].empty()) {
-        sourceCount = std::stoul(countRes[0][0]);
-      }
+        std::string schema_name = table.schema_name;
+        std::string table_name = table.table_name;
+        std::string lowerSchemaName = schema_name;
+        std::transform(lowerSchemaName.begin(), lowerSchemaName.end(),
+                       lowerSchemaName.begin(), ::tolower);
 
-      // Check if source table is empty
-      if (sourceCount == 0) {
-        // Check target count in PostgreSQL
-        auto targetCountRes = cm.executeQueryPostgres(
-            *pgConn, "SELECT COUNT(*) FROM \"" + lowerSchemaName + "\".\"" +
-                         table_name + "\";");
+        auto countRes = executeQueryMariaDB(
+            mariadbConn.get(),
+            "SELECT COUNT(*) FROM `" + schema_name + "`.`" + table_name + "`;");
+        size_t sourceCount = 0;
+        if (!countRes.empty() && !countRes[0][0].empty()) {
+          sourceCount = std::stoul(countRes[0][0]);
+        }
+        // Obtener conteo de registros en la tabla destino
+        std::string targetCountQuery = "SELECT COUNT(*) FROM \"" +
+                                       lowerSchemaName + "\".\"" + table_name +
+                                       "\";";
         size_t targetCount = 0;
-        if (!targetCountRes.empty() && !targetCountRes[0][0].is_null()) {
-          targetCount = targetCountRes[0][0].as<size_t>();
+        try {
+          pqxx::work txn(pgConn);
+          auto targetResult = txn.exec(targetCountQuery);
+          if (!targetResult.empty()) {
+            targetCount = targetResult[0][0].as<size_t>();
+          }
+          txn.commit();
+        } catch (const std::exception &e) {
+          // Tabla podría no existir aún
         }
 
-        // If both source and target are empty, mark as NO DATA
-        if (targetCount == 0) {
-          updateStatus(*pgConn, schema_name, table_name, "NO DATA", 0);
+        // Lógica simple basada en counts reales
+        if (sourceCount == 0) {
+          if (targetCount == 0) {
+            updateStatus(pgConn, schema_name, table_name, "NO_DATA", 0);
+          } else {
+            updateStatus(pgConn, schema_name, table_name, "ERROR", 0);
+          }
           continue;
         }
-      }
 
-      auto columns = cm.executeQueryMariaDB(
-          mariadbConn.get(),
-          "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, "
-          "COLLATION_NAME, CHARACTER_SET_NAME, CHARACTER_MAXIMUM_LENGTH "
-          "FROM information_schema.columns "
-          "WHERE table_schema = '" +
-              schema_name + "' AND table_name = '" + table_name + "';");
-
-      if (columns.empty()) {
-        updateStatus(*pgConn, schema_name, table_name, "error");
-        continue;
-      }
-
-      std::vector<std::string> columnNames;
-      std::vector<std::string> columnTypes;
-      std::vector<bool> columnNullable;
-      for (const auto &col : columns) {
-        if (col.size() < 8) {
+        // Si sourceCount = targetCount, ya están sincronizados
+        if (sourceCount == targetCount) {
+          updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
+                       targetCount);
           continue;
         }
-        columnNames.push_back(sanitizeColumnName(col[0]));
-        std::string dataType = col[1];
-        std::string maxLength = col[7];
 
-        std::string pgDataType;
-        if (dataType == "char") {
-          if (!maxLength.empty() && maxLength != "NULL") {
-            pgDataType = "CHAR(" + maxLength + ")";
-          } else {
-            pgDataType = "VARCHAR(255)"; // Cambiar CHAR(1) por VARCHAR(255)
-                                         // para evitar errores
-          }
-        } else if (dataType == "varchar") {
-          if (!maxLength.empty() && maxLength != "NULL") {
-            pgDataType = "VARCHAR(" + maxLength + ")";
-          } else {
-            pgDataType = "VARCHAR";
-          }
-        } else {
-          pgDataType =
-              dataTypeMap.count(dataType) ? dataTypeMap[dataType] : "TEXT";
+        // Si sourceCount > targetCount, necesitamos transferir datos faltantes
+        if (sourceCount < targetCount) {
+          updateStatus(pgConn, schema_name, table_name, "ERROR", targetCount);
+          continue;
         }
 
-        columnTypes.push_back(pgDataType);
-        columnNullable.push_back(col[2] == "YES");
-      }
+        auto columns = executeQueryMariaDB(
+            mariadbConn.get(),
+            "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, "
+            "CHARACTER_MAXIMUM_LENGTH FROM information_schema.columns WHERE "
+            "table_schema = '" +
+                schema_name + "' AND table_name = '" + table_name + "';");
 
-      if (columnNames.empty()) {
-        updateStatus(*pgConn, schema_name, table_name, "error");
-        continue;
-      }
+        if (columns.empty()) {
+          updateStatus(pgConn, schema_name, table_name, "ERROR");
+          continue;
+        }
 
-      bool tableExists = false;
+        std::vector<std::string> columnNames;
+        std::vector<std::string> columnTypes;
+        std::vector<bool> columnNullable;
 
-      // Para tablas full_load, solo TRUNCATE si es la primera vez (last_offset
-      // = 0)
-      if (table.status == "full_load") {
-        // Verificar si es la primera vez procesando esta tabla
-        std::string checkOffsetQuery =
+        for (const auto &col : columns) {
+          if (col.size() < 6)
+            continue;
+
+          std::string colName = col[0];
+          std::transform(colName.begin(), colName.end(), colName.begin(),
+                         ::tolower);
+          columnNames.push_back(colName);
+
+          std::string dataType = col[1];
+          std::string maxLength = col[5];
+
+          std::string pgType = "TEXT";
+          if (dataType == "char" || dataType == "varchar") {
+            pgType = (!maxLength.empty() && maxLength != "NULL")
+                         ? dataType + "(" + maxLength + ")"
+                         : "VARCHAR";
+          } else if (dataTypeMap.count(dataType)) {
+            pgType = dataTypeMap[dataType];
+          }
+
+          columnTypes.push_back(pgType);
+          columnNullable.push_back(col[2] == "YES");
+        }
+
+        if (columnNames.empty()) {
+          updateStatus(pgConn, schema_name, table_name, "ERROR");
+          continue;
+        }
+
+        if (table.status == "FULL_LOAD") {
+          pqxx::work txn(pgConn);
+          auto offsetCheck = txn.exec(
+              "SELECT last_offset FROM metadata.catalog WHERE schema_name='" +
+              escapeSQL(schema_name) + "' AND table_name='" +
+              escapeSQL(table_name) + "';");
+          txn.commit();
+
+          bool shouldTruncate = true;
+          if (!offsetCheck.empty() && !offsetCheck[0][0].is_null()) {
+            std::string currentOffset = offsetCheck[0][0].as<std::string>();
+            if (currentOffset != "0" && !currentOffset.empty()) {
+              shouldTruncate = false;
+            }
+          }
+
+          if (shouldTruncate) {
+            pqxx::work txn(pgConn);
+            txn.exec("TRUNCATE TABLE \"" + lowerSchemaName + "\".\"" +
+                     table_name + "\" CASCADE;");
+            txn.commit();
+          }
+        } else if (table.status == "RESET") {
+          pqxx::work txn(pgConn);
+          txn.exec("DROP TABLE IF EXISTS \"" + lowerSchemaName + "\".\"" +
+                   table_name + "\" CASCADE;");
+          txn.exec("UPDATE metadata.catalog SET last_offset='0' WHERE "
+                   "schema_name='" +
+                   escapeSQL(schema_name) + "' AND table_name='" +
+                   escapeSQL(table_name) + "';");
+          txn.commit();
+
+          updateStatus(pgConn, schema_name, table_name, "FULL_LOAD", 0);
+          continue;
+        }
+
+        const size_t CHUNK_SIZE = SyncConfig::getChunkSize();
+        size_t totalProcessed = 0;
+
+        std::string offsetQuery =
             "SELECT last_offset FROM metadata.catalog WHERE schema_name='" +
-            cm.escapeSQL(schema_name) + "' AND table_name='" +
-            cm.escapeSQL(table_name) + "';";
-        auto offsetCheck = cm.executeQueryPostgres(*pgConn, checkOffsetQuery);
+            escapeSQL(schema_name) + "' AND table_name='" +
+            escapeSQL(table_name) + "';";
+        pqxx::work txn(pgConn);
+        auto currentOffsetRes = txn.exec(offsetQuery);
+        txn.commit();
 
-        bool shouldTruncate = true;
-        if (!offsetCheck.empty() && !offsetCheck[0][0].is_null()) {
-          std::string currentOffset = offsetCheck[0][0].as<std::string>();
-          if (currentOffset != "0" && !currentOffset.empty()) {
-            shouldTruncate = false;
+        if (!currentOffsetRes.empty() && !currentOffsetRes[0][0].is_null()) {
+          try {
+            totalProcessed =
+                std::stoul(currentOffsetRes[0][0].as<std::string>());
+          } catch (...) {
+            totalProcessed = 0;
           }
         }
 
-        if (shouldTruncate) {
-          cm.executeQueryPostgres(*pgConn, "TRUNCATE TABLE \"" +
-                                               lowerSchemaName + "\".\"" +
-                                               table_name + "\" CASCADE;");
-        }
+        // Transferir datos faltantes usando OFFSET
+        bool hasMoreData = true;
+        while (hasMoreData) {
+          std::string selectQuery = "SELECT * FROM `" + schema_name + "`.`" +
+                                    table_name + "` LIMIT " +
+                                    std::to_string(CHUNK_SIZE) + " OFFSET " +
+                                    std::to_string(targetCount) + ";";
 
-        // Obtener columnas de la tabla existente
-        auto existingColumns = cm.executeQueryPostgres(
-            *pgConn, "SELECT column_name FROM information_schema.columns "
-                     "WHERE table_schema = '" +
-                         lowerSchemaName + "' AND table_name = '" + table_name +
-                         "' "
-                         "ORDER BY ordinal_position;");
+          auto results = executeQueryMariaDB(mariadbConn.get(), selectQuery);
 
-        if (!existingColumns.empty()) {
-          columnNames.clear();
-          for (const auto &col : existingColumns) {
-            if (col.size() >= 1) {
-              columnNames.push_back(col[0].as<std::string>());
-            }
-          }
-        }
-      }
-
-      const size_t CHUNK_SIZE = SyncConfig::getChunkSize();
-      size_t totalProcessed = 0;
-      std::string lastProcessedTimestamp;
-
-      std::string offsetQuery =
-          "SELECT last_offset FROM metadata.catalog WHERE schema_name='" +
-          cm.escapeSQL(schema_name) + "' AND table_name='" +
-          cm.escapeSQL(table_name) + "';";
-      auto currentOffsetRes = cm.executeQueryPostgres(*pgConn, offsetQuery);
-
-      // Obtener last_offset de la base de datos
-      if (!currentOffsetRes.empty() && !currentOffsetRes[0][0].is_null()) {
-        std::string lastOffsetStr = currentOffsetRes[0][0].as<std::string>();
-        try {
-          totalProcessed = std::stoul(lastOffsetStr);
-        } catch (...) {
-          totalProcessed = 0;
-        }
-      } else {
-        totalProcessed = 0;
-      }
-
-      size_t chunkCount = 0;
-      bool hasMoreData = true;
-
-      // Para tablas full_load, continuar desde donde se quedó
-      if (table.status == "full_load") {
-        // totalProcessed ya tiene el valor de last_offset - no reiniciar
-      } else {
-        std::string checkQuery =
-            "SELECT COUNT(*) FROM `" + schema_name + "`.`" + table_name + "`";
-        if (!table.last_sync_time.empty() && !table.last_sync_column.empty()) {
-          checkQuery += " WHERE `" + table.last_sync_column + "` > '" +
-                        table.last_sync_time + "'";
-        }
-        checkQuery += ";";
-
-        auto checkResult =
-            cm.executeQueryMariaDB(mariadbConn.get(), checkQuery);
-        if (checkResult.empty() || checkResult[0][0].empty() ||
-            std::stoul(checkResult[0][0]) == 0) {
-          if (!table.last_sync_column.empty()) {
-            // ✅ No hay datos nuevos para procesar - mantener estado actual
-            // NO actualizar last_offset con sourceCount
-          } else {
-            // ✅ Para tablas sin timestamp, verificar si ya procesamos todo
-            if (!table.last_offset.empty() &&
-                std::stoul(table.last_offset) >= sourceCount) {
-              updateStatus(*pgConn, schema_name, table_name, "PERFECT MATCH",
-                           sourceCount);
-            }
-          }
-          continue;
-        }
-      }
-
-      while (hasMoreData) {
-
-        std::string selectQuery =
-            "SELECT * FROM `" + schema_name + "`.`" + table_name + "`";
-
-        if (table.status == "full_load") {
-          // Para full_load, procesar desde el inicio sin filtros
-          selectQuery += " ORDER BY " +
-                         (table.last_sync_column.empty()
-                              ? "1"
-                              : "`" + table.last_sync_column + "` ASC") +
-                         " LIMIT " + std::to_string(CHUNK_SIZE) + " OFFSET " +
-                         std::to_string(totalProcessed) + ";";
-        } else if (!table.last_sync_column.empty()) {
-          if (!table.last_sync_time.empty()) {
-            selectQuery += " WHERE `" + table.last_sync_column + "` > '" +
-                           table.last_sync_time + "'";
-          }
-          if (!lastProcessedTimestamp.empty()) {
-            selectQuery += (table.last_sync_time.empty() ? " WHERE " : " AND ");
-            selectQuery += "`" + table.last_sync_column + "` > '" +
-                           lastProcessedTimestamp + "'";
-          }
-          selectQuery += " ORDER BY `" + table.last_sync_column +
-                         "` ASC LIMIT " + std::to_string(CHUNK_SIZE) + ";";
-        } else {
-          selectQuery += " LIMIT " + std::to_string(CHUNK_SIZE) + " OFFSET " +
-                         std::to_string(totalProcessed) + ";";
-        }
-
-        auto results = cm.executeQueryMariaDB(mariadbConn.get(), selectQuery);
-
-        if (results.empty()) {
-          hasMoreData = false;
-          break;
-        }
-
-        // ✅ Procesar TODOS los chunks de esta tabla sin salir del bucle
-        // Solo salir si realmente no hay más datos
-
-        // ✅ Mover variables al scope correcto
-        bool transactionSuccess = true;
-        size_t rowsInserted = 0;
-
-        try {
-          // Obtener PKs de la tabla existente en PostgreSQL
-          std::vector<std::string> primaryKeyColumns;
-          auto pkQuery = cm.executeQueryPostgres(
-              *pgConn,
-              "SELECT column_name FROM information_schema.table_constraints tc "
-              "JOIN information_schema.key_column_usage kcu ON "
-              "tc.constraint_name = kcu.constraint_name "
-              "WHERE tc.table_schema = '" +
-                  lowerSchemaName + "' AND tc.table_name = '" + table_name +
-                  "' "
-                  "AND tc.constraint_type = 'PRIMARY KEY' "
-                  "ORDER BY kcu.ordinal_position;");
-
-          for (const auto &pkRow : pkQuery) {
-            if (pkRow.size() >= 1) {
-              primaryKeyColumns.push_back(pkRow[0].as<std::string>());
-            }
+          if (results.empty()) {
+            hasMoreData = false;
+            break;
           }
 
-          // No crear transacción aquí para evitar transacciones anidadas
+          size_t rowsInserted = 0;
 
-          std::string columnsStr;
-          for (size_t i = 0; i < columnNames.size(); ++i) {
-            columnsStr += "\"" + columnNames[i] + "\"";
-            if (i < columnNames.size() - 1)
-              columnsStr += ",";
-          }
-
-          std::string placeholders;
-          for (size_t i = 0; i < columnNames.size(); ++i) {
-            placeholders += "$" + std::to_string(i + 1);
-            if (i < columnNames.size() - 1)
-              placeholders += ",";
-          }
-
-          std::string upsertQuery = "INSERT INTO \"" + lowerSchemaName +
-                                    "\".\"" + table_name + "\" (" + columnsStr +
-                                    ") VALUES (" + placeholders + ")";
-
-          if (!primaryKeyColumns.empty()) {
-
-            std::string pkColumnsStr;
-            for (size_t i = 0; i < primaryKeyColumns.size(); ++i) {
-              if (i > 0)
-                pkColumnsStr += ", ";
-              pkColumnsStr += "\"" + primaryKeyColumns[i] + "\"";
+          try {
+            std::string columnsStr;
+            for (size_t i = 0; i < columnNames.size(); ++i) {
+              columnsStr += "\"" + columnNames[i] + "\"";
+              if (i < columnNames.size() - 1)
+                columnsStr += ",";
             }
 
-            std::vector<std::string> nonPKColumns;
-            for (const auto &col : columnNames) {
-              if (std::find(primaryKeyColumns.begin(), primaryKeyColumns.end(),
-                            col) == primaryKeyColumns.end()) {
-                nonPKColumns.push_back(col);
-              }
-            }
-
-            if (!nonPKColumns.empty()) {
-              std::string updateStr;
-              for (size_t i = 0; i < nonPKColumns.size(); ++i) {
-                if (i > 0)
-                  updateStr += ", ";
-                updateStr += "\"" + nonPKColumns[i] + "\" = EXCLUDED.\"" +
-                             nonPKColumns[i] + "\"";
-              }
-              upsertQuery += " ON CONFLICT (" + pkColumnsStr +
-                             ") DO UPDATE SET " + updateStr;
-            } else {
-              upsertQuery += " ON CONFLICT (" + pkColumnsStr + ") DO NOTHING";
-            }
-          } else {
-          }
-
-          size_t rowIndex = 0;
-
-          for (const auto &row : results) {
-            if (row.size() != columnNames.size()) {
-              continue;
-            }
-
-            try {
-              std::vector<std::string> processedValues;
-
-              for (size_t i = 0; i < row.size() && i < columnTypes.size();
-                   ++i) {
-                if (i >= row.size()) {
-                  break;
-                }
-
-                std::string value = row[i];
-                std::string columnType =
-                    (i < columnTypes.size()) ? columnTypes[i] : "TEXT";
-
-                std::string trimmedValue = value;
-                trimmedValue.erase(0,
-                                   trimmedValue.find_first_not_of(" \t\n\r"));
-                trimmedValue.erase(trimmedValue.find_last_not_of(" \t\n\r") +
-                                   1);
-
-                if (value == "NULL" || value.empty() || trimmedValue.empty()) {
-                  std::string defaultValue;
-                  if (columnType == "DATE" || columnType == "TIMESTAMP" ||
-                      columnType == "TIME") {
-                    defaultValue = "1970-01-01";
-                  } else if (columnType == "BOOLEAN") {
-                    defaultValue = "false";
-                  } else if (columnType == "BIT") {
-                    defaultValue = "B'0'";
-                  } else if (columnType == "INTEGER" ||
-                             columnType == "BIGINT" ||
-                             columnType == "SMALLINT" || columnType == "REAL" ||
-                             columnType == "DOUBLE PRECISION" ||
-                             columnType == "NUMERIC") {
-                    defaultValue = "0";
-                  } else if (!columnNullable[i]) {
-                    defaultValue = "N/A";
-                  } else {
-                    defaultValue = "NULL";
-                  }
-                  processedValues.push_back(defaultValue);
-
-                } else {
-                  std::string sanitizedValue = value;
-
-                  std::string::iterator end_pos = std::remove_if(
-                      sanitizedValue.begin(), sanitizedValue.end(),
-                      [](unsigned char c) {
-                        return c < 32 && c != 9 && c != 10 && c != 13;
-                      });
-                  sanitizedValue.erase(end_pos, sanitizedValue.end());
-
-                  std::replace_if(
-                      sanitizedValue.begin(), sanitizedValue.end(),
-                      [](unsigned char c) { return c >= 128; }, ' ');
-
-                  size_t pos = 0;
-                  while ((pos = sanitizedValue.find("\\", pos)) !=
-                         std::string::npos) {
-                    sanitizedValue.replace(pos, 1, "\\\\");
-                    pos += 2;
-                  }
-
-                  std::string trimmedSanitized = sanitizedValue;
-                  trimmedSanitized.erase(
-                      0, trimmedSanitized.find_first_not_of(" \t\n\r"));
-                  trimmedSanitized.erase(
-                      trimmedSanitized.find_last_not_of(" \t\n\r") + 1);
-
-                  if (columnType == "BOOLEAN") {
-                    std::string lowerValue = sanitizedValue;
-                    std::transform(lowerValue.begin(), lowerValue.end(),
-                                   lowerValue.begin(), ::tolower);
-
-                    if (lowerValue == "1" || lowerValue == "true" ||
-                        lowerValue == "yes" || lowerValue == "on" ||
-                        lowerValue == "t" || lowerValue == "y") {
-                      sanitizedValue = "true";
-                    } else if (lowerValue == "0" || lowerValue == "false" ||
-                               lowerValue == "no" || lowerValue == "off" ||
-                               lowerValue == "f" || lowerValue == "n") {
-                      sanitizedValue = "false";
-                    } else {
-                      try {
-                        int numValue = std::stoi(sanitizedValue);
-                        sanitizedValue = (numValue != 0) ? "true" : "false";
-                      } catch (...) {
-                        sanitizedValue = "false";
-                      }
-                    }
-                  } else if (columnType == "BIT") {
-                    std::string lowerValue = sanitizedValue;
-                    std::transform(lowerValue.begin(), lowerValue.end(),
-                                   lowerValue.begin(), ::tolower);
-                    if (lowerValue == "1" || lowerValue == "true" ||
-                        lowerValue == "yes" || lowerValue == "on" ||
-                        lowerValue == "t" || lowerValue == "y") {
-                      sanitizedValue = "B'1'";
-                    } else if (lowerValue == "0" || lowerValue == "false" ||
-                               lowerValue == "no" || lowerValue == "off" ||
-                               lowerValue == "f" || lowerValue == "n") {
-                      sanitizedValue = "B'0'";
-                    } else {
-                      try {
-                        int numValue = std::stoi(sanitizedValue);
-                        sanitizedValue = (numValue != 0) ? "B'1'" : "B'0'";
-                      } catch (...) {
-                        sanitizedValue = "B'0'";
-                      }
-                    }
-                  } else if (columnType == "DATE" ||
-                             columnType == "TIMESTAMP" ||
-                             columnType == "TIME") {
-                    if (sanitizedValue == "0000-00-00" ||
-                        sanitizedValue == "0000-00-00 00:00:00" ||
-                        sanitizedValue.empty() || sanitizedValue == "" ||
-                        sanitizedValue == "NULL" || trimmedSanitized.empty()) {
-                      sanitizedValue = "1970-01-01";
-                    }
-
-                    if (sanitizedValue.empty()) {
-                      sanitizedValue = "1970-01-01";
-                    }
-
-                    if (sanitizedValue.length() >= 10) {
-                      std::string datePart = sanitizedValue.substr(0, 10);
-                      if (datePart.length() == 10 && datePart[8] == '0' &&
-                          datePart[9] == '0') {
-                        sanitizedValue.replace(8, 2, "01");
-                      }
-                    }
-                  }
-
-                  processedValues.push_back(sanitizedValue);
-                }
-              }
-
-              if (processedValues.size() == columnNames.size()) {
-                std::vector<std::string> paramValues;
-                for (size_t i = 0; i < processedValues.size(); ++i) {
-                  if (processedValues[i] == "NULL") {
-                    paramValues.push_back("NULL"); // Empty string for NULL
-                  } else if (processedValues[i].empty() &&
-                             (columnTypes[i] == "DATE" ||
-                              columnTypes[i] == "TIMESTAMP" ||
-                              columnTypes[i] == "TIME")) {
-                    paramValues.push_back(
-                        "NULL"); // Use NULL for empty timestamp values
-                  } else if (processedValues[i] == "1970-01-01" &&
-                             (columnTypes[i] == "DATE" ||
-                              columnTypes[i] == "TIMESTAMP" ||
-                              columnTypes[i] == "TIME")) {
-                    paramValues.push_back("1970-01-01");
-                  } else if (processedValues[i] == "true" ||
-                             processedValues[i] == "false") {
-                    paramValues.push_back(processedValues[i]);
-                  } else if (processedValues[i].rfind("B'", 0) == 0) {
-                    paramValues.push_back(processedValues[i]);
-                  } else if (processedValues[i] == "0" &&
-                             (columnTypes[i] == "INTEGER" ||
-                              columnTypes[i] == "BIGINT" ||
-                              columnTypes[i] == "SMALLINT" ||
-                              columnTypes[i] == "REAL" ||
-                              columnTypes[i] == "DOUBLE PRECISION" ||
-                              columnTypes[i] == "NUMERIC")) {
-                    paramValues.push_back("0");
-                  } else {
-                    paramValues.push_back(processedValues[i]);
-                  }
-                }
-
-                std::string upsertQueryWithValues;
-                if (primaryKeyColumns.empty()) {
-                  upsertQueryWithValues = "INSERT INTO \"" + lowerSchemaName +
-                                          "\".\"" + table_name + "\" (" +
-                                          columnsStr + ") VALUES (";
-                } else {
-                  upsertQueryWithValues = "INSERT INTO \"" + lowerSchemaName +
-                                          "\".\"" + table_name + "\" (" +
-                                          columnsStr + ") VALUES (";
-                }
-
-                for (size_t i = 0; i < paramValues.size(); ++i) {
-                  if (i > 0)
-                    upsertQueryWithValues += ", ";
-
-                  if (paramValues[i] == "NULL") {
-                    upsertQueryWithValues += "NULL";
-                  } else if (paramValues[i] == "true" ||
-                             paramValues[i] == "false") {
-                    upsertQueryWithValues += paramValues[i];
-                  } else if (paramValues[i].rfind("B'", 0) == 0) {
-                    upsertQueryWithValues += paramValues[i];
-                  } else if (paramValues[i] == "0" &&
-                             (columnTypes[i] == "INTEGER" ||
-                              columnTypes[i] == "BIGINT" ||
-                              columnTypes[i] == "SMALLINT" ||
-                              columnTypes[i] == "REAL" ||
-                              columnTypes[i] == "DOUBLE PRECISION" ||
-                              columnTypes[i] == "NUMERIC")) {
-                    upsertQueryWithValues += "0";
-                  } else {
-
-                    std::string escapedValue = paramValues[i];
-                    size_t pos = 0;
-                    while ((pos = escapedValue.find("'", pos)) !=
-                           std::string::npos) {
-                      escapedValue.replace(pos, 1, "''");
-                      pos += 2;
-                    }
-                    upsertQueryWithValues += "'" + escapedValue + "'";
-                  }
-                }
-                if (!primaryKeyColumns.empty()) {
-                  std::string conflictColumns = "";
-                  for (const auto &pkCol : primaryKeyColumns) {
-                    if (!conflictColumns.empty())
-                      conflictColumns += ", ";
-                    conflictColumns += "\"" + pkCol + "\"";
-                  }
-
-                  // Verificar si hay columnas no-PK para actualizar
-                  bool hasNonPKColumns = false;
-                  for (size_t i = 0; i < columnNames.size(); ++i) {
-                    bool isPrimaryKey = false;
-                    for (const auto &pkCol : primaryKeyColumns) {
-                      if (columnNames[i] == pkCol) {
-                        isPrimaryKey = true;
-                        break;
-                      }
-                    }
-                    if (!isPrimaryKey) {
-                      hasNonPKColumns = true;
-                      break;
-                    }
-                  }
-
-                  if (hasNonPKColumns) {
-                    upsertQueryWithValues += ") ON CONFLICT (" +
-                                             conflictColumns +
-                                             ") DO UPDATE SET ";
-
-                    for (size_t i = 0; i < columnNames.size(); ++i) {
-                      bool isPrimaryKey = false;
-                      for (const auto &pkCol : primaryKeyColumns) {
-                        if (columnNames[i] == pkCol) {
-                          isPrimaryKey = true;
-                          break;
-                        }
-                      }
-
-                      if (!isPrimaryKey) {
-                        upsertQueryWithValues += "\"" + columnNames[i] +
-                                                 "\" = EXCLUDED.\"" +
-                                                 columnNames[i] + "\"";
-                        bool hasMoreNonPK = false;
-                        for (size_t j = i + 1; j < columnNames.size(); ++j) {
-                          bool isNextPK = false;
-                          for (const auto &pkCol : primaryKeyColumns) {
-                            if (columnNames[j] == pkCol) {
-                              isNextPK = true;
-                              break;
-                            }
-                          }
-                          if (!isNextPK) {
-                            hasMoreNonPK = true;
-                            break;
-                          }
-                        }
-                        if (hasMoreNonPK) {
-                          upsertQueryWithValues += ", ";
-                        }
-                      }
-                    }
-                  } else {
-                    // Solo PK, usar INSERT simple
-                    upsertQueryWithValues +=
-                        ") ON CONFLICT (" + conflictColumns + ") DO NOTHING";
-                  }
-                } else {
-                  upsertQueryWithValues += ")";
-                }
-
-                upsertQueryWithValues += ";";
-
-                cm.executeQueryPostgres(*pgConn, upsertQueryWithValues);
-                rowsInserted++; // ✅ Solo incrementar si la inserción fue
-                                // exitosa
-              } else {
+            std::stringstream csvData;
+            for (const auto &row : results) {
+              if (row.size() != columnNames.size()) {
                 continue;
               }
 
-              rowIndex++;
-            } catch (const std::exception &e) {
-              std::cerr << "Error during data insertion: " << e.what()
-                        << std::endl;
-              transactionSuccess = false;
-              break;
-            } catch (...) {
-              std::cerr << "Unknown error during data insertion" << std::endl;
-              transactionSuccess = false;
-              break;
-            }
-          }
+              for (size_t i = 0; i < row.size(); ++i) {
+                if (i > 0)
+                  csvData << "|";
 
-          if (transactionSuccess) {
-            std::string newLastSync = table.last_sync_time;
-            if (!table.last_sync_column.empty()) {
-              auto maxDateResults = cm.executeQueryMariaDB(
-                  mariadbConn.get(), "SELECT MAX(`" + table.last_sync_column +
-                                         "`) FROM `" + schema_name + "`.`" +
-                                         table_name + "`;");
-              if (!maxDateResults.empty() && !maxDateResults[0][0].empty()) {
-                newLastSync = maxDateResults[0][0];
+                std::string value = row[i];
+                if (value == "NULL" || value.empty()) {
+                  csvData << "\\N";
+                } else {
+                  // Con pipe como delimitador, solo necesitamos escapar pipes
+                  // en los datos
+                  std::string escapedValue = value;
+                  size_t pos = 0;
+                  while ((pos = escapedValue.find("|", pos)) !=
+                         std::string::npos) {
+                    escapedValue.replace(pos, 1, "\\|");
+                    pos += 2;
+                  }
+                  csvData << escapedValue;
+                }
+              }
+              csvData << "\n";
+              rowsInserted++;
+            }
+
+            if (rowsInserted > 0) {
+              try {
+                pqxx::work txn(pgConn);
+                std::string tableName =
+                    "\"" + lowerSchemaName + "\".\"" + table_name + "\"";
+                pqxx::stream_to stream(txn, tableName);
+
+                for (const auto &row : results) {
+                  if (row.size() == columnNames.size()) {
+                    std::vector<std::optional<std::string>> values;
+                    for (size_t i = 0; i < row.size(); ++i) {
+                      if (row[i] == "NULL" || row[i].empty()) {
+                        values.push_back(std::nullopt);
+                      } else {
+                        values.push_back(row[i]);
+                      }
+                    }
+                    stream << values;
+                  }
+                }
+                stream.complete();
+                txn.commit();
+              } catch (const std::exception &e) {
+                rowsInserted = 0; // Reset to 0 if COPY failed
               }
             }
 
-            // ✅ NO actualizar el estado aquí - se actualiza al final del
-            // procesamiento
+          } catch (const std::exception &e) {
+            std::cerr << "Error processing data: " << e.what() << std::endl;
+          }
+
+          // Actualizar targetCount después de inserción exitosa
+          targetCount += rowsInserted;
+
+          if (targetCount >= sourceCount) {
+            hasMoreData = false;
+          }
+        }
+
+        // Actualizar catalog DESPUÉS de completar la transferencia exitosa
+        if (targetCount > 0) {
+          // Determinar estado final basado en sincronización
+          if (targetCount >= sourceCount) {
+            updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
+                         targetCount);
           } else {
-            std::cerr << "Transaction aborted for table " << lowerSchemaName
-                      << "." << table_name << std::endl;
-            updateStatus(*pgConn, schema_name, table_name, "error");
-          }
-
-        } catch (const std::exception &e) {
-          std::cerr << "Error during transaction processing: " << e.what()
-                    << std::endl;
-          updateStatus(*pgConn, schema_name, table_name, "error");
-        }
-
-        // Solo actualizar totalProcessed si la inserción fue exitosa
-        if (transactionSuccess) {
-          totalProcessed += rowsInserted;
-
-          // Actualizar last_offset inmediatamente después de cada inserción
-          // exitosa
-          if (table.status == "full_load") {
-            updateStatus(*pgConn, schema_name, table_name, "full_load",
-                         totalProcessed);
-          } else {
-            updateStatus(*pgConn, schema_name, table_name, "LISTENING_CHANGES",
-                         totalProcessed);
+            updateStatus(pgConn, schema_name, table_name, "LISTENING_CHANGES",
+                         targetCount);
           }
         }
-        chunkCount++;
-        if (chunkCount % 1 == 0) {
-        }
-
-        if (!results.empty() && !table.last_sync_column.empty()) {
-          for (const auto &row : results) {
-            size_t timestampColIndex = 0;
-            for (size_t i = 0; i < columnNames.size(); ++i) {
-              if (columnNames[i] == table.last_sync_column) {
-                timestampColIndex = i;
-                break;
-              }
-            }
-            if (timestampColIndex < row.size()) {
-              lastProcessedTimestamp = row[timestampColIndex];
-            }
-          }
-        } else if (!results.empty()) {
-          // For tables without timestamp, just update the offset counter
-          // No need to track timestamp
-        }
-
-        // ✅ Lógica mejorada para continuar procesando TODOS los chunks
-        // Solo terminar si realmente no hay más datos
-
-        // Para tablas con timestamp, verificar si hay más datos nuevos
-        if (!table.last_sync_column.empty() &&
-            !lastProcessedTimestamp.empty() && !table.last_sync_time.empty()) {
-          if (lastProcessedTimestamp <= table.last_sync_time) {
-            hasMoreData = false; // No hay datos más recientes
-          }
-        }
-
-        // Para tablas sin timestamp, verificar si ya procesamos todo
-        if (table.last_sync_column.empty() && totalProcessed >= sourceCount) {
-          hasMoreData = false; // Ya procesamos todas las filas
-        }
-
-        // Para tablas con timestamp en full_load, verificar si ya procesamos
-        // todo
-        if (!table.last_sync_column.empty() && table.status == "full_load" &&
-            totalProcessed >= sourceCount) {
-          hasMoreData = false; // Ya procesamos todas las filas
-        }
-
-        // ✅ Solo terminar si el batch actual está vacío (no hay más datos)
-        if (results.empty()) {
-          hasMoreData = false;
-        }
-
-        results.clear();
       }
-
-      if (totalProcessed > 0) {
-      }
-
-      // Verificar si completamos full_load y cambiar a LISTENING_CHANGES
-      if (totalProcessed >= sourceCount && table.status == "full_load") {
-        std::cout << "✓ Table " << schema_name << "." << table_name
-                  << " FULL SYNC COMPLETED: " << totalProcessed << "/"
-                  << sourceCount << " rows" << std::endl;
-        updateStatus(*pgConn, schema_name, table_name, "LISTENING_CHANGES",
-                     totalProcessed);
-        syncedTables++;
-      } else if (totalProcessed > 0 && table.status == "full_load") {
-      } else if (totalProcessed >= sourceCount) {
-      }
+    } catch (const std::exception &e) {
+      std::cerr << "Error in transferDataMariaDBToPostgres: " << e.what()
+                << std::endl;
     }
-
-    // Reporting handled by StreamingData loop
   }
 
-  void updateStatus(pqxx::connection &pgConn, const std::string &schema,
-                    const std::string &table, const std::string &status,
-                    size_t lastOffset = 0,
-                    const std::string &lastSyncTime = "") {
+  void updateStatus(pqxx::connection &pgConn, const std::string &schema_name,
+                    const std::string &table_name, const std::string &status,
+                    size_t offset = 0) {
     try {
       pqxx::work txn(pgConn);
-
-      if (!lastSyncTime.empty()) {
-        txn.exec_params("UPDATE metadata.catalog SET status=$1, "
-                        "last_offset=$2, last_sync_time=$3, last_refresh=NOW() "
-                        "WHERE schema_name=$4 AND table_name=$5;",
-                        status, lastOffset, lastSyncTime, schema, table);
-      } else {
-        txn.exec_params(
-            "UPDATE metadata.catalog SET status=$1, last_offset=$2, "
-            "last_refresh=NOW() "
-            "WHERE schema_name=$3 AND table_name=$4;",
-            status, lastOffset, schema, table);
-      }
-
+      txn.exec("UPDATE metadata.catalog SET status='" + status +
+               "', last_offset='" + std::to_string(offset) +
+               "', last_sync_time=NOW() WHERE schema_name='" +
+               escapeSQL(schema_name) + "' AND table_name='" +
+               escapeSQL(table_name) + "';");
       txn.commit();
     } catch (const std::exception &e) {
       std::cerr << "Error updating status: " << e.what() << std::endl;
     }
   }
+
+private:
+  std::string escapeSQL(const std::string &value) {
+    std::string escaped = value;
+    size_t pos = 0;
+    while ((pos = escaped.find("'", pos)) != std::string::npos) {
+      escaped.replace(pos, 1, "''");
+      pos += 2;
+    }
+    return escaped;
+  }
+
+  std::unique_ptr<MYSQL, void (*)(MYSQL *)>
+  connectMariaDB(const std::string &connStr) {
+    std::string host, user, password, db, port;
+    std::istringstream ss(connStr);
+    std::string token;
+    while (std::getline(ss, token, ';')) {
+      auto pos = token.find('=');
+      if (pos == std::string::npos)
+        continue;
+      std::string key = token.substr(0, pos);
+      std::string value = token.substr(pos + 1);
+      if (key == "host")
+        host = value;
+      else if (key == "user")
+        user = value;
+      else if (key == "password")
+        password = value;
+      else if (key == "db")
+        db = value;
+      else if (key == "port")
+        port = value;
+    }
+
+    MYSQL *conn = mysql_init(nullptr);
+    if (!conn) {
+      std::cerr << "mysql_init() failed\n";
+      return std::unique_ptr<MYSQL, void (*)(MYSQL *)>(nullptr, mysql_close);
+    }
+
+    unsigned int portNum = 3306;
+    if (!port.empty()) {
+      try {
+        portNum = std::stoul(port);
+      } catch (...) {
+        portNum = 3306;
+      }
+    }
+
+    if (mysql_real_connect(conn, host.c_str(), user.c_str(), password.c_str(),
+                           db.c_str(), portNum, nullptr, 0) != nullptr) {
+      return std::unique_ptr<MYSQL, void (*)(MYSQL *)>(conn, mysql_close);
+    } else {
+      std::cerr << "Connection Failed: " << mysql_error(conn) << std::endl;
+      mysql_close(conn);
+      return std::unique_ptr<MYSQL, void (*)(MYSQL *)>(nullptr, mysql_close);
+    }
+  }
+
+  std::vector<std::vector<std::string>>
+  executeQueryMariaDB(MYSQL *conn, const std::string &query) {
+    std::vector<std::vector<std::string>> results;
+    if (!conn) {
+      std::cerr << "No valid MariaDB connection" << std::endl;
+      return results;
+    }
+
+    if (mysql_query(conn, query.c_str())) {
+      std::cerr << "Query execution failed: " << mysql_error(conn) << std::endl;
+      return results;
+    }
+
+    MYSQL_RES *res = mysql_store_result(conn);
+    if (!res) {
+      if (mysql_field_count(conn) > 0) {
+        std::cerr << "mysql_store_result() failed: " << mysql_error(conn)
+                  << std::endl;
+      }
+      return results;
+    }
+
+    unsigned int num_fields = mysql_num_fields(res);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(res))) {
+      std::vector<std::string> rowData;
+      rowData.reserve(num_fields);
+      for (unsigned int i = 0; i < num_fields; ++i) {
+        rowData.push_back(row[i] ? row[i] : "NULL");
+      }
+      results.push_back(rowData);
+    }
+    mysql_free_result(res);
+    return results;
+  }
 };
 
+// Definición de variables estáticas
 std::unordered_map<std::string, std::string> MariaDBToPostgres::dataTypeMap = {
     {"int", "INTEGER"},
     {"bigint", "BIGINT"},
-    {"varchar", "VARCHAR"},
-    {"text", "TEXT"},
-    {"date", "DATE"},
-    {"datetime", "TIMESTAMP"},
-    {"timestamp", "TIMESTAMP"},
-    {"time", "TIME"},
+    {"smallint", "SMALLINT"},
+    {"tinyint", "SMALLINT"},
+    {"decimal", "NUMERIC"},
     {"float", "REAL"},
     {"double", "DOUBLE PRECISION"},
-    {"decimal", "NUMERIC"},
-    {"boolean", "BOOLEAN"},
-    {"tinyint", "SMALLINT"},
-    {"smallint", "SMALLINT"},
-    {"mediumint", "INTEGER"},
+    {"varchar", "VARCHAR"},
+    {"char", "CHAR"},
+    {"text", "TEXT"},
     {"longtext", "TEXT"},
     {"mediumtext", "TEXT"},
-    {"char", "CHAR"},
+    {"tinytext", "TEXT"},
     {"blob", "BYTEA"},
     {"longblob", "BYTEA"},
-    {"enum", "TEXT"},
-    {"set", "TEXT"},
-    {"json", "JSONB"},
-    {"bit", "BIT"},
-    {"year", "INTEGER"},
-    {"binary", "BYTEA"},
-    {"varbinary", "BYTEA"},
-    {"geometry", "TEXT"},
-    {"point", "POINT"},
-    {"linestring", "TEXT"},
-    {"polygon", "TEXT"},
-    {"multipoint", "TEXT"},
-    {"multilinestring", "TEXT"},
-    {"multipolygon", "TEXT"},
-    {"geometrycollection", "TEXT"}};
+    {"mediumblob", "BYTEA"},
+    {"tinyblob", "BYTEA"},
+    {"json", "JSON"},
+    {"boolean", "BOOLEAN"},
+    {"bit", "BIT"}};
 
 std::unordered_map<std::string, std::string> MariaDBToPostgres::collationMap = {
-    {"utf8mb4_unicode_ci", "en_US"},
-    {"utf8mb4_general_ci", "en_US"},
-    {"utf8_unicode_ci", "en_US"},
-    {"utf8_general_ci", "en_US"},
-    {"latin1_swedish_ci", "en_US"},
-    {"latin1_general_ci", "en_US"},
-    {"binary", "C"},
-    {"ascii", "C"},
-    {"utf8mb4_bin", "en_US"},
-    {"utf8_bin", "en_US"}};
+    {"utf8_general_ci", "en_US.utf8"},
+    {"utf8mb4_general_ci", "en_US.utf8"},
+    {"latin1_swedish_ci", "C"},
+    {"ascii_general_ci", "C"}};
 
-#endif // MARIADBTOPOSTGRES_H
+#endif

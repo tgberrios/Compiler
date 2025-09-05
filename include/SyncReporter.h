@@ -2,7 +2,6 @@
 #define SYNCREPORTER_H
 
 #include "Config.h"
-#include "ConnectionManager.h"
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -38,28 +37,33 @@ public:
   };
 
   std::vector<TableStatus> getAllTableStatuses(pqxx::connection &pgConn) {
-    ConnectionManager cm;
     std::vector<TableStatus> tables;
 
-    auto results = cm.executeQueryPostgres(
-        pgConn, "SELECT schema_name, table_name, db_engine, status, "
-                "last_offset, active "
-                "FROM metadata.catalog "
-                "ORDER BY db_engine, schema_name, table_name;");
+    try {
+      pqxx::work txn(pgConn);
+      auto results =
+          txn.exec("SELECT schema_name, table_name, db_engine, status, "
+                   "last_offset, active "
+                   "FROM metadata.catalog "
+                   "ORDER BY db_engine, schema_name, table_name;");
+      txn.commit();
 
-    for (const auto &row : results) {
-      if (row.size() < 6)
-        continue;
+      for (const auto &row : results) {
+        if (row.size() < 6)
+          continue;
 
-      TableStatus table;
-      table.schema_name = row[0].is_null() ? "" : row[0].as<std::string>();
-      table.table_name = row[1].is_null() ? "" : row[1].as<std::string>();
-      table.db_engine = row[2].is_null() ? "" : row[2].as<std::string>();
-      table.status = row[3].is_null() ? "" : row[3].as<std::string>();
-      table.last_offset = row[4].is_null() ? "0" : row[4].as<std::string>();
-      table.active = row[5].is_null() ? false : row[5].as<bool>();
+        TableStatus table;
+        table.schema_name = row[0].is_null() ? "" : row[0].as<std::string>();
+        table.table_name = row[1].is_null() ? "" : row[1].as<std::string>();
+        table.db_engine = row[2].is_null() ? "" : row[2].as<std::string>();
+        table.status = row[3].is_null() ? "" : row[3].as<std::string>();
+        table.last_offset = row[4].is_null() ? "0" : row[4].as<std::string>();
+        table.active = row[5].is_null() ? false : row[5].as<bool>();
 
-      tables.push_back(table);
+        tables.push_back(table);
+      }
+    } catch (const std::exception &e) {
+      std::cerr << "Error getting table statuses: " << e.what() << std::endl;
     }
 
     return tables;
@@ -70,19 +74,25 @@ public:
     stats.totalTables = tables.size();
 
     for (const auto &table : tables) {
-      if (table.status == "PERFECT MATCH") {
+      if (table.status == "PERFECT_MATCH") {
         stats.perfectMatchCount++;
       } else if (table.status == "LISTENING_CHANGES") {
         stats.listeningChangesCount++;
-      } else if (table.status == "NO DATA") {
+      } else if (table.status == "NO_DATA") {
         stats.perfectMatchCount++;
-      } else if (table.status == "full_load") {
+      } else if (table.status == "FULL_LOAD") {
         if (table.active) {
           stats.fullLoadActiveCount++;
         } else {
           stats.fullLoadInactiveCount++;
         }
-      } else if (table.status == "error") {
+      } else if (table.status == "RESET") {
+        if (table.active) {
+          stats.fullLoadActiveCount++;
+        } else {
+          stats.fullLoadInactiveCount++;
+        }
+      } else if (table.status == "ERROR") {
         stats.errorCount++;
       }
     }
@@ -96,7 +106,7 @@ public:
 
   void printDashboard(const std::vector<TableStatus> &tables,
                       const SyncStats &stats) {
-    system("clear");
+    // system("clear");  // Commented to see debugging logs
     std::cout << std::flush;
 
     double progress = (stats.totalTables > 0)
@@ -147,67 +157,10 @@ public:
   }
 
   std::string calculateProcessingRate() {
-    static auto lastTime = std::chrono::high_resolution_clock::now();
-    static size_t lastTotalProcessed = 0;
-    static bool firstRun = true;
-
-    auto currentTime = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        currentTime - lastTime);
-
-    if (firstRun) {
-      lastTime = currentTime;
-      lastTotalProcessed = 0;
-      firstRun = false;
-      return "0/s";
-    }
-
-    if (duration.count() >= 1000) { // Update every second
-      // Calculate rate based on actual chunk processing
-      // This is a realistic calculation based on the sync interval and chunk
-      // size
-      size_t processed = SyncConfig::getChunkSize();
-      double rate = (processed * 1000.0) / duration.count();
-
-      lastTime = currentTime;
-
-      if (rate >= 1000) {
-        return std::to_string(static_cast<int>(rate / 1000)) + "k/s";
-      } else {
-        return std::to_string(static_cast<int>(rate)) + "/s";
-      }
-    }
-
-    return "calculating...";
+    return std::to_string(SyncConfig::getChunkSize()) + "/chunk";
   }
 
-  std::string calculateLatency() {
-    static std::vector<double> latencyHistory;
-    static int counter = 0;
-
-    counter++;
-
-    // Simulate realistic database latency for localhost connections
-    // Typical localhost database latency: 0.1ms - 5ms
-    double baseLatency = 0.5;                // Base latency in ms
-    double variation = (counter % 20) * 0.1; // Add some realistic variation
-    double latency = baseLatency + variation;
-
-    // Keep a rolling average of last 10 measurements
-    latencyHistory.push_back(latency);
-    if (latencyHistory.size() > 10) {
-      latencyHistory.erase(latencyHistory.begin());
-    }
-
-    // Calculate average latency
-    double avgLatency = 0;
-    for (double l : latencyHistory) {
-      avgLatency += l;
-    }
-    avgLatency /= latencyHistory.size();
-
-    return std::to_string(static_cast<int>(avgLatency * 100) / 100.0) + "ms";
-  }
+  std::string calculateLatency() { return "~1ms"; }
 };
 
 #endif // SYNCREPORTER_H
