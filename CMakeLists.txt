@@ -16,7 +16,7 @@ link_directories(
     /usr/lib64
 )
 
-add_executable(DataSync src/main.cpp src/Config.cpp)
+add_executable(DataSync src/main.cpp src/Config.cpp src/logger.cpp)
 
 # Configurar para que el ejecutable se genere en el directorio raíz
 set_target_properties(DataSync PROPERTIES

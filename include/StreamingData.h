@@ -6,6 +6,7 @@
 #include "PostgresToMariaDB.h"
 #include "SyncReporter.h"
 #include "catalog_manager.h"
+#include "logger.h"
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -20,6 +21,9 @@ public:
   ~StreamingData() = default;
 
   void run() {
+    Logger::initialize();
+    Logger::info("StreamingData", "DataSync system started");
+
     MariaDBToPostgres mariaToPg;
     PostgresToMariaDB pgToMaria;
     SyncReporter reporter;
@@ -27,11 +31,20 @@ public:
 
     int minutes_counter = 0;
     pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
+    Logger::info("StreamingData", "PostgreSQL connection established");
 
+    Logger::info("StreamingData",
+                 "Starting MariaDB -> PostgreSQL catalog synchronization");
     catalogManager.syncCatalogMariaDBToPostgres();
+    Logger::info("StreamingData",
+                 "Setting up target tables MariaDB -> PostgreSQL");
     mariaToPg.setupTableTargetMariaDBToPostgres();
 
+    Logger::info("StreamingData",
+                 "Starting PostgreSQL -> MariaDB catalog synchronization");
     catalogManager.syncCatalogPostgresToMariaDB();
+    Logger::info("StreamingData",
+                 "Setting up target tables PostgreSQL -> MariaDB");
     pgToMaria.setupTableTargetPostgresToMariaDB();
 
     std::atomic<bool> stop_threads{false};
@@ -41,39 +54,70 @@ public:
     std::vector<std::future<void>> pg_futures;
 
     // Lanzar UN SOLO thread por tipo de BD (sin paralelización múltiple)
+    Logger::info("StreamingData",
+                 "Starting MariaDB -> PostgreSQL transfer thread");
     maria_futures.emplace_back(std::async(std::launch::async, [&mariaToPg]() {
+      Logger::info("MariaDBToPostgres", "Transfer thread started");
       while (true) {
-        mariaToPg.transferDataMariaDBToPostgres();
+        try {
+          mariaToPg.transferDataMariaDBToPostgres();
+        } catch (const std::exception &e) {
+          Logger::error("MariaDBToPostgres",
+                        "Transfer error: " + std::string(e.what()));
+        }
         std::this_thread::sleep_for(
             std::chrono::seconds(SyncConfig::getSyncInterval()));
       }
     }));
 
+    Logger::info("StreamingData",
+                 "Starting PostgreSQL -> MariaDB transfer thread");
     pg_futures.emplace_back(std::async(std::launch::async, [&pgToMaria]() {
+      Logger::info("PostgresToMariaDB", "Transfer thread started");
       while (true) {
-        pgToMaria.transferDataPostgresToMariaDB();
+        try {
+          pgToMaria.transferDataPostgresToMariaDB();
+        } catch (const std::exception &e) {
+          Logger::error("PostgresToMariaDB",
+                        "Transfer error: " + std::string(e.what()));
+        }
         std::this_thread::sleep_for(
             std::chrono::seconds(SyncConfig::getSyncInterval()));
       }
     }));
 
     // Bucle principal solo para reporting y setup periódico
+    Logger::info("StreamingData", "Starting main monitoring loop");
     while (true) {
-      loadConfigFromDatabase(pgConn);
-      reporter.generateFullReport(pgConn);
+      try {
+        Logger::debug("StreamingData", "Loading configuration from database");
+        loadConfigFromDatabase(pgConn);
 
-      minutes_counter += 1;
-      if (minutes_counter >= 2) {
-        mariaToPg.setupTableTargetMariaDBToPostgres();
+        Logger::debug("StreamingData", "Generating full report");
+        reporter.generateFullReport(pgConn);
 
-        // Limpiar catálogo cada 2 minutos
-        catalogManager.cleanCatalog();
+        minutes_counter += 1;
+        if (minutes_counter >= 2) {
+          Logger::info("StreamingData",
+                       "Running periodic maintenance (every 2 minutes)");
+          Logger::debug("StreamingData",
+                        "Setting up target tables MariaDB -> PostgreSQL");
+          mariaToPg.setupTableTargetMariaDBToPostgres();
 
-        minutes_counter = 0;
+          Logger::debug("StreamingData", "Cleaning catalog");
+          catalogManager.cleanCatalog();
+
+          minutes_counter = 0;
+          Logger::info("StreamingData", "Periodic maintenance completed");
+        }
+
+        std::this_thread::sleep_for(
+            std::chrono::seconds(SyncConfig::getSyncInterval()));
+      } catch (const std::exception &e) {
+        Logger::error("StreamingData",
+                      "Main loop error: " + std::string(e.what()));
+        std::this_thread::sleep_for(std::chrono::seconds(5));
       }
-
-      std::this_thread::sleep_for(
-          std::chrono::seconds(SyncConfig::getSyncInterval()));
     }
   }
 
@@ -95,17 +139,26 @@ private:
         if (key == "chunk_size") {
           size_t newSize = std::stoul(value);
           if (newSize > 0 && newSize != SyncConfig::getChunkSize()) {
+            Logger::info("loadConfigFromDatabase",
+                         "Updating chunk_size from " +
+                             std::to_string(SyncConfig::getChunkSize()) +
+                             " to " + std::to_string(newSize));
             SyncConfig::setChunkSize(newSize);
           }
         } else if (key == "sync_interval") {
           size_t newInterval = std::stoul(value);
           if (newInterval > 0 && newInterval != SyncConfig::getSyncInterval()) {
+            Logger::info("loadConfigFromDatabase",
+                         "Updating sync_interval from " +
+                             std::to_string(SyncConfig::getSyncInterval()) +
+                             " to " + std::to_string(newInterval));
             SyncConfig::setSyncInterval(newInterval);
           }
         }
       }
     } catch (const std::exception &e) {
-      // Continue with current config if table doesn't exist
+      Logger::warning("loadConfigFromDatabase",
+                      "Could not load configuration: " + std::string(e.what()));
     }
   }
 };
