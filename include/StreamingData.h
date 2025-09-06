@@ -134,6 +134,11 @@ public:
                         "Starting MSSQL -> PostgreSQL catalog synchronization");
           catalogManager.syncCatalogMSSQLToPostgres();
 
+          Logger::debug(
+              "StreamingData",
+              "Starting PostgreSQL -> MariaDB catalog synchronization");
+          catalogManager.syncCatalogPostgresToMariaDB();
+
           Logger::debug("StreamingData", "Cleaning catalog");
           catalogManager.cleanCatalog();
 

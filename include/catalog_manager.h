@@ -194,8 +194,10 @@ public:
         }
       }
 
+      // Always discover PostgreSQL tables, even if no replication is configured
       if (pgConnStrings.empty()) {
-        return;
+        // Use default PostgreSQL connection string for discovery
+        pgConnStrings.push_back(DatabaseConfig::getPostgresConnectionString());
       }
 
       for (const auto &connStr : pgConnStrings) {
@@ -242,6 +244,8 @@ public:
 
           {
             pqxx::work txn(pgConn);
+
+            // First check if table exists with PostgreSQL connection
             auto existsCheck =
                 txn.exec("SELECT COUNT(*) FROM metadata.catalog "
                          "WHERE schema_name = '" +
@@ -258,15 +262,30 @@ public:
                          escapeSQL(tableName) + "' AND connection_string = '" +
                          escapeSQL(connStr) + "';");
               } else {
-                txn.exec("INSERT INTO metadata.catalog "
-                         "(schema_name, table_name, cluster_name, db_engine, "
-                         "connection_string, "
-                         "last_sync_time, last_sync_column, status, "
-                         "last_offset, active, replicate_to_mariadb) "
-                         "VALUES ('" +
-                         escapeSQL(schemaName) + "', '" + escapeSQL(tableName) +
-                         "', '', 'PostgreSQL', '" + escapeSQL(connStr) +
-                         "', NOW(), '', 'PENDING', '0', false, true);");
+                // Check if PostgreSQL entry already exists
+                auto pgExistsCheck = txn.exec(
+                    "SELECT COUNT(*) FROM metadata.catalog "
+                    "WHERE schema_name = '" +
+                    escapeSQL(schemaName) + "' AND table_name = '" +
+                    escapeSQL(tableName) + "' AND db_engine = 'PostgreSQL';");
+
+                if (!pgExistsCheck.empty() && !pgExistsCheck[0][0].is_null()) {
+                  int pgExists = pgExistsCheck[0][0].as<int>();
+                  if (pgExists == 0) {
+                    // No PostgreSQL entry exists, create PostgreSQL entry
+                    txn.exec("INSERT INTO metadata.catalog "
+                             "(schema_name, table_name, cluster_name, "
+                             "db_engine, "
+                             "connection_string, "
+                             "last_sync_time, last_sync_column, status, "
+                             "last_offset, active, replicate_to_mariadb) "
+                             "VALUES ('" +
+                             escapeSQL(schemaName) + "', '" +
+                             escapeSQL(tableName) + "', '', 'PostgreSQL', '" +
+                             escapeSQL(connStr) +
+                             "', NOW(), '', 'PENDING', '0', false, true);");
+                  }
+                }
               }
             }
             txn.commit();
