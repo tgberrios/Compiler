@@ -4,8 +4,10 @@
 #include "Config.h"
 #include "logger.h"
 #include <algorithm>
+#include <bson/bson.h>
 #include <iostream>
 #include <memory>
+#include <mongoc/mongoc.h>
 #include <mysql/mysql.h>
 #include <pqxx/pqxx>
 #include <sql.h>
@@ -454,6 +456,250 @@ public:
     }
   }
 
+  void syncCatalogMongoToPostgres() {
+    try {
+      Logger::info("syncCatalogMongoToPostgres",
+                   "Starting MongoDB to PostgreSQL catalog synchronization");
+      pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
+
+      std::vector<std::string> mongoConnStrings;
+      {
+        pqxx::work txn(pgConn);
+        auto results =
+            txn.exec("SELECT connection_string FROM metadata.catalog "
+                     "WHERE db_engine='MongoDB' AND active=true;");
+        txn.commit();
+
+        for (const auto &row : results) {
+          if (row.size() >= 1) {
+            mongoConnStrings.push_back(row[0].as<std::string>());
+          }
+        }
+      }
+
+      Logger::info("syncCatalogMongoToPostgres",
+                   "Found " + std::to_string(mongoConnStrings.size()) +
+                       " MongoDB connections");
+      if (mongoConnStrings.empty()) {
+        Logger::warning("syncCatalogMongoToPostgres",
+                        "No MongoDB connections found in catalog");
+        return;
+      }
+
+      for (const auto &connStr : mongoConnStrings) {
+        Logger::debug("syncCatalogMongoToPostgres",
+                      "Processing connection: " + connStr);
+        {
+          pqxx::work txn(pgConn);
+          auto connectionCheck =
+              txn.exec("SELECT COUNT(*) FROM metadata.catalog "
+                       "WHERE connection_string='" +
+                       escapeSQL(connStr) +
+                       "' AND db_engine='MongoDB' AND active=true "
+                       "AND last_sync_time > NOW() - INTERVAL '5 minutes';");
+          txn.commit();
+
+          if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
+            int connectionCount = connectionCheck[0][0].as<int>();
+            Logger::debug("syncCatalogMongoToPostgres",
+                          "Recent sync count: " +
+                              std::to_string(connectionCount));
+            if (connectionCount > 0) {
+              Logger::debug("syncCatalogMongoToPostgres",
+                            "Skipping due to recent sync");
+              continue;
+            }
+          }
+        }
+
+        Logger::debug("syncCatalogMongoToPostgres",
+                      "Connecting to MongoDB: " + connStr);
+
+        // Connect to MongoDB
+        mongoc_init();
+        mongoc_client_t *client = mongoc_client_new(connStr.c_str());
+        if (!client) {
+          Logger::error("syncCatalogMongoToPostgres",
+                        "Failed to connect to MongoDB");
+          continue;
+        }
+
+        // Get list of databases
+        bson_t *command = BCON_NEW("listDatabases", BCON_INT32(1));
+        bson_t reply;
+        bson_error_t error;
+
+        bool ret = mongoc_client_command_simple(client, "admin", command, NULL,
+                                                &reply, &error);
+        bson_destroy(command);
+
+        if (!ret) {
+          Logger::error("syncCatalogMongoToPostgres",
+                        "Failed to list databases: " +
+                            std::string(error.message));
+          bson_destroy(&reply);
+          mongoc_client_destroy(client);
+          continue;
+        }
+
+        // Parse databases and collections
+        bson_iter_t iter;
+        if (bson_iter_init_find(&iter, &reply, "databases") &&
+            BSON_ITER_HOLDS_ARRAY(&iter)) {
+          bson_iter_t db_iter;
+          bson_iter_recurse(&iter, &db_iter);
+
+          while (bson_iter_next(&db_iter)) {
+            if (BSON_ITER_HOLDS_DOCUMENT(&db_iter)) {
+              bson_t db_doc;
+              uint32_t doc_len;
+              const uint8_t *doc_data;
+              bson_iter_document(&db_iter, &doc_len, &doc_data);
+              bson_init_static(&db_doc, doc_data, doc_len);
+
+              bson_iter_t name_iter;
+              if (bson_iter_init_find(&name_iter, &db_doc, "name") &&
+                  BSON_ITER_HOLDS_UTF8(&name_iter)) {
+                std::string dbName = bson_iter_utf8(&name_iter, NULL);
+
+                // Skip system databases
+                if (dbName == "admin" || dbName == "config" ||
+                    dbName == "local") {
+                  continue;
+                }
+
+                // Get collections for this database
+                mongoc_database_t *database =
+                    mongoc_client_get_database(client, dbName.c_str());
+                bson_t *list_collections =
+                    BCON_NEW("listCollections", BCON_INT32(1));
+                bson_t reply;
+                bson_error_t error;
+
+                bool ret = mongoc_database_command_simple(
+                    database, list_collections, NULL, &reply, &error);
+                bson_destroy(list_collections);
+
+                if (!ret) {
+                  Logger::error("syncCatalogMongoToPostgres",
+                                "Failed to list collections: " +
+                                    std::string(error.message));
+                  bson_destroy(&reply);
+                  mongoc_database_destroy(database);
+                  continue;
+                }
+
+                // Parse collections from reply
+                bson_iter_t coll_iter;
+                if (bson_iter_init_find(&coll_iter, &reply, "cursor") &&
+                    BSON_ITER_HOLDS_DOCUMENT(&coll_iter)) {
+                  bson_t cursor_doc;
+                  uint32_t cursor_len;
+                  const uint8_t *cursor_data;
+                  bson_iter_document(&coll_iter, &cursor_len, &cursor_data);
+                  bson_init_static(&cursor_doc, cursor_data, cursor_len);
+
+                  bson_iter_t first_batch_iter;
+                  if (bson_iter_init_find(&first_batch_iter, &cursor_doc,
+                                          "firstBatch") &&
+                      BSON_ITER_HOLDS_ARRAY(&first_batch_iter)) {
+                    bson_iter_t coll_doc_iter;
+                    bson_iter_recurse(&first_batch_iter, &coll_doc_iter);
+
+                    while (bson_iter_next(&coll_doc_iter)) {
+                      if (BSON_ITER_HOLDS_DOCUMENT(&coll_doc_iter)) {
+                        bson_t coll_doc;
+                        uint32_t coll_doc_len;
+                        const uint8_t *coll_doc_data;
+                        bson_iter_document(&coll_doc_iter, &coll_doc_len,
+                                           &coll_doc_data);
+                        bson_init_static(&coll_doc, coll_doc_data,
+                                         coll_doc_len);
+
+                        bson_iter_t name_iter;
+                        if (bson_iter_init_find(&name_iter, &coll_doc,
+                                                "name") &&
+                            BSON_ITER_HOLDS_UTF8(&name_iter)) {
+                          std::string collectionName =
+                              bson_iter_utf8(&name_iter, NULL);
+
+                          Logger::debug("syncCatalogMongoToPostgres",
+                                        "Processing collection: " + dbName +
+                                            "." + collectionName);
+
+                          {
+                            pqxx::work txn(pgConn);
+                            auto existsCheck = txn.exec(
+                                "SELECT COUNT(*) FROM metadata.catalog "
+                                "WHERE schema_name = '" +
+                                escapeSQL(dbName) + "' AND table_name = '" +
+                                escapeSQL(collectionName) +
+                                "' AND connection_string = '" +
+                                escapeSQL(connStr) + "';");
+
+                            if (!existsCheck.empty() &&
+                                !existsCheck[0][0].is_null()) {
+                              int exists = existsCheck[0][0].as<int>();
+                              if (exists > 0) {
+                                Logger::debug(
+                                    "syncCatalogMongoToPostgres",
+                                    "Collection " + dbName + "." +
+                                        collectionName +
+                                        " already exists, updating timestamp");
+                                txn.exec("UPDATE metadata.catalog SET "
+                                         "last_sync_time = NOW() "
+                                         "WHERE schema_name = '" +
+                                         escapeSQL(dbName) +
+                                         "' AND table_name = '" +
+                                         escapeSQL(collectionName) +
+                                         "' AND connection_string = '" +
+                                         escapeSQL(connStr) + "';");
+                              } else {
+                                Logger::info("syncCatalogMongoToPostgres",
+                                             "Inserting new collection " +
+                                                 dbName + "." + collectionName);
+                                txn.exec(
+                                    "INSERT INTO metadata.catalog "
+                                    "(schema_name, table_name, cluster_name, "
+                                    "db_engine, "
+                                    "connection_string, "
+                                    "last_sync_time, last_sync_column, status, "
+                                    "last_offset, active) "
+                                    "VALUES ('" +
+                                    escapeSQL(dbName) + "', '" +
+                                    escapeSQL(collectionName) +
+                                    "', '', 'MongoDB', '" + escapeSQL(connStr) +
+                                    "', NOW(), '', 'PENDING', '0', false);");
+                              }
+                            }
+                            txn.commit();
+                          }
+                        }
+                        bson_destroy(&coll_doc);
+                      }
+                    }
+                  }
+                  bson_destroy(&cursor_doc);
+                }
+
+                bson_destroy(&reply);
+                mongoc_database_destroy(database);
+              }
+              bson_destroy(&db_doc);
+            }
+          }
+        }
+
+        bson_destroy(&reply);
+        mongoc_client_destroy(client);
+      }
+    } catch (const std::exception &e) {
+      Logger::error("syncCatalogMongoToPostgres",
+                    "Error in syncCatalogMongoToPostgres: " +
+                        std::string(e.what()));
+    }
+  }
+
 private:
   std::string escapeSQL(const std::string &value) {
     std::string escaped = value;
@@ -629,7 +875,7 @@ private:
 
       // Limpiar tablas con db_engine inválido
       txn.exec("DELETE FROM metadata.catalog WHERE db_engine NOT IN "
-               "('PostgreSQL', 'MariaDB', 'MSSQL');");
+               "('PostgreSQL', 'MariaDB', 'MSSQL', 'MongoDB');");
 
       // Limpiar tablas con schema_name o table_name vacío
       txn.exec("DELETE FROM metadata.catalog WHERE schema_name IS NULL OR "

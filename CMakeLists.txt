@@ -10,6 +10,8 @@ include_directories(
     /usr/include/mariadb
     /usr/include/mariadb/mysql
     /opt/microsoft/msodbcsql/include
+    /usr/include/libmongoc-1.0
+    /usr/include/libbson-1.0
 )
 
 link_directories(
@@ -31,4 +33,6 @@ target_link_libraries(DataSync
     pq
     pthread
     odbc
+    mongoc-1.0
+    bson-1.0
 )

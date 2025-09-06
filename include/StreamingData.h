@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
+#include "MongoToPostgres.h"
 #include "PostgresToPostgres.h"
 #include "SyncReporter.h"
 #include "catalog_manager.h"
@@ -28,6 +29,7 @@ public:
     MariaDBToPostgres mariaToPg;
     MSSQLToPostgres mssqlToPg;
     PostgresToPostgres pgToPg;
+    MongoToPostgres mongoToPg;
     SyncReporter reporter;
     CatalogManager catalogManager;
 
@@ -55,6 +57,13 @@ public:
     Logger::info("StreamingData",
                  "Setting up target tables PostgreSQL -> PostgreSQL");
     pgToPg.setupTableTargetPostgresToPostgres();
+
+    Logger::info("StreamingData",
+                 "Starting MongoDB -> PostgreSQL catalog synchronization");
+    catalogManager.syncCatalogMongoToPostgres();
+    Logger::info("StreamingData",
+                 "Setting up target tables MongoDB -> PostgreSQL");
+    mongoToPg.setupTableTargetMongoToPostgres();
 
     // Ejecutar transferencias de forma secuencial para evitar conflictos de
     // concurrencia
@@ -95,6 +104,15 @@ public:
                         "Transfer error: " + std::string(e.what()));
         }
 
+        Logger::debug("StreamingData",
+                      "Executing MongoDB -> PostgreSQL transfer");
+        try {
+          mongoToPg.transferDataMongoToPostgres();
+        } catch (const std::exception &e) {
+          Logger::error("MongoToPostgres",
+                        "Transfer error: " + std::string(e.what()));
+        }
+
         Logger::debug("StreamingData", "Generating full report");
         reporter.generateFullReport(pgConn);
 
@@ -114,6 +132,11 @@ public:
               "StreamingData",
               "Starting PostgreSQL -> PostgreSQL catalog synchronization");
           catalogManager.syncCatalogPostgresToPostgres();
+
+          Logger::debug(
+              "StreamingData",
+              "Starting MongoDB -> PostgreSQL catalog synchronization");
+          catalogManager.syncCatalogMongoToPostgres();
 
           Logger::debug("StreamingData", "Cleaning catalog");
           catalogManager.cleanCatalog();
