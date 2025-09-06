@@ -2,6 +2,7 @@
 #define STREAMINGDATA_H
 
 #include "Config.h"
+#include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
 #include "PostgresToMariaDB.h"
 #include "SyncReporter.h"
@@ -26,6 +27,7 @@ public:
 
     MariaDBToPostgres mariaToPg;
     PostgresToMariaDB pgToMaria;
+    MSSQLToPostgres mssqlToPg;
     SyncReporter reporter;
     CatalogManager catalogManager;
 
@@ -47,11 +49,19 @@ public:
                  "Setting up target tables PostgreSQL -> MariaDB");
     pgToMaria.setupTableTargetPostgresToMariaDB();
 
+    Logger::info("StreamingData",
+                 "Starting MSSQL -> PostgreSQL catalog synchronization");
+    catalogManager.syncCatalogMSSQLToPostgres();
+    Logger::info("StreamingData",
+                 "Setting up target tables MSSQL -> PostgreSQL");
+    mssqlToPg.setupTableTargetMSSQLToPostgres();
+
     std::atomic<bool> stop_threads{false};
 
     // Ejecutar transferencias continuas sin interrupciones
     std::vector<std::future<void>> maria_futures;
     std::vector<std::future<void>> pg_futures;
+    std::vector<std::future<void>> mssql_futures;
 
     // Lanzar UN SOLO thread por tipo de BD (sin paralelización múltiple)
     Logger::info("StreamingData",
@@ -86,6 +96,22 @@ public:
       }
     }));
 
+    Logger::info("StreamingData",
+                 "Starting MSSQL -> PostgreSQL transfer thread");
+    mssql_futures.emplace_back(std::async(std::launch::async, [&mssqlToPg]() {
+      Logger::info("MSSQLToPostgres", "Transfer thread started");
+      while (true) {
+        try {
+          mssqlToPg.transferDataMSSQLToPostgres();
+        } catch (const std::exception &e) {
+          Logger::error("MSSQLToPostgres",
+                        "Transfer error: " + std::string(e.what()));
+        }
+        std::this_thread::sleep_for(
+            std::chrono::seconds(SyncConfig::getSyncInterval()));
+      }
+    }));
+
     // Bucle principal solo para reporting y setup periódico
     Logger::info("StreamingData", "Starting main monitoring loop");
     while (true) {
@@ -103,6 +129,10 @@ public:
           Logger::debug("StreamingData",
                         "Setting up target tables MariaDB -> PostgreSQL");
           mariaToPg.setupTableTargetMariaDBToPostgres();
+
+          Logger::debug("StreamingData",
+                        "Starting MSSQL -> PostgreSQL catalog synchronization");
+          catalogManager.syncCatalogMSSQLToPostgres();
 
           Logger::debug("StreamingData", "Cleaning catalog");
           catalogManager.cleanCatalog();

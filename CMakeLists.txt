@@ -9,11 +9,13 @@ include_directories(
     /usr/local/include
     /usr/include/mariadb
     /usr/include/mariadb/mysql
+    /opt/microsoft/msodbcsql/include
 )
 
 link_directories(
     /usr/local/lib
     /usr/lib64
+    /opt/microsoft/msodbcsql/lib64
 )
 
 add_executable(DataSync src/main.cpp src/Config.cpp src/logger.cpp)
@@ -28,4 +30,5 @@ target_link_libraries(DataSync
     pqxx
     pq
     pthread
+    odbc
 )
