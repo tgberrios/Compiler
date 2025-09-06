@@ -8,6 +8,7 @@
 #include <iostream>
 #include <pqxx/pqxx>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -16,12 +17,16 @@ public:
   SyncReporter() = default;
   ~SyncReporter() = default;
 
+  static std::string currentProcessingTable;
+  static std::string lastProcessingTable;
+
   struct SyncStats {
     size_t totalTables = 0;
     size_t perfectMatchCount = 0;
     size_t listeningChangesCount = 0;
     size_t fullLoadActiveCount = 0;
     size_t fullLoadInactiveCount = 0;
+    size_t noDataCount = 0;
     size_t errorCount = 0;
     size_t totalSynchronized = 0;
     size_t totalErrors = 0;
@@ -79,7 +84,7 @@ public:
       } else if (table.status == "LISTENING_CHANGES") {
         stats.listeningChangesCount++;
       } else if (table.status == "NO_DATA") {
-        stats.perfectMatchCount++;
+        stats.noDataCount++;
       } else if (table.status == "FULL_LOAD") {
         if (table.active) {
           stats.fullLoadActiveCount++;
@@ -106,8 +111,13 @@ public:
 
   void printDashboard(const std::vector<TableStatus> &tables,
                       const SyncStats &stats) {
-    // system("clear");  // Commented to see debugging logs
+#ifdef _WIN32
+    system("cls");
+#else
+    system("clear");
+#endif
     std::cout << std::flush;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     double progress = (stats.totalTables > 0)
                           ? static_cast<double>(stats.totalSynchronized) /
@@ -132,7 +142,17 @@ public:
     std::cout << "├─ Full Load (Active): " << stats.fullLoadActiveCount << "\n";
     std::cout << "├─ Full Load (Inactive): " << stats.fullLoadInactiveCount
               << "\n";
+    std::cout << "├─ No Data: " << stats.noDataCount << "\n";
     std::cout << "├─ Errors: " << stats.errorCount << "\n";
+
+    // Mostrar tabla actualmente procesando
+    if (!currentProcessingTable.empty()) {
+      std::cout << "├─ ▶ Currently Processing: " << currentProcessingTable
+                << "\n";
+    } else if (!lastProcessingTable.empty()) {
+      std::cout << "├─ • Last Processed: " << lastProcessingTable << "\n";
+    }
+
     std::cout << "├─ Processing Rate: " << calculateProcessingRate() << "\n";
     std::cout << "├─ Latency: " << calculateLatency() << "\n";
     std::cout << "├─ Chunk Size: " << SyncConfig::getChunkSize() << "\n";
@@ -162,5 +182,9 @@ public:
 
   std::string calculateLatency() { return "~1ms"; }
 };
+
+// Definición de variables estáticas
+std::string SyncReporter::currentProcessingTable = "";
+std::string SyncReporter::lastProcessingTable = "";
 
 #endif // SYNCREPORTER_H

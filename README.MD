@@ -20,9 +20,7 @@ SELECT schema_name, table_name, db_engine, active, status FROM metadata.catalog;
 ### Supported Synchronization Types
 
 - **MariaDB → PostgreSQL**: `WHERE active=true AND db_engine='MariaDB'`
-- **MSSQL → PostgreSQL**: `WHERE active=true AND db_engine='MSSQL'`
 - **PostgreSQL → MariaDB**: `WHERE active=true AND db_engine='Postgres' AND replicate_to_mariadb=true`
-- **PostgreSQL → MSSQL-Server**: `WHERE active=true AND db_engine='Postgres' AND replicate_to_mssql=true`
 
 ### Quick Commands
 

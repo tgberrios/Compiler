@@ -2,7 +2,6 @@
 #define STREAMINGDATA_H
 
 #include "Config.h"
-#include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
 #include "PostgresToMariaDB.h"
 #include "SyncReporter.h"
@@ -23,7 +22,6 @@ public:
   void run() {
     MariaDBToPostgres mariaToPg;
     PostgresToMariaDB pgToMaria;
-    // MSSQLToPostgres mssqlToPg;
     SyncReporter reporter;
 
     int minutes_counter = 0;
@@ -35,15 +33,11 @@ public:
     pgToMaria.syncCatalogPostgresToMariaDB();
     pgToMaria.setupTableTargetPostgresToMariaDB();
 
-    // mssqlToPg.syncCatalogMSSQLToPostgres();
-    // mssqlToPg.setupTableTargetMSSQLToPostgres();
-
     std::atomic<bool> stop_threads{false};
 
     // Ejecutar transferencias continuas sin interrupciones
     std::vector<std::future<void>> maria_futures;
     std::vector<std::future<void>> pg_futures;
-    // std::vector<std::future<void>> mssql_futures;
 
     // Lanzar UN SOLO thread por tipo de BD (sin paralelización múltiple)
     maria_futures.emplace_back(std::async(std::launch::async, [&mariaToPg]() {
@@ -62,15 +56,6 @@ public:
       }
     }));
 
-    // mssql_futures.emplace_back(std::async(std::launch::async, [&mssqlToPg]()
-    // {
-    //   while (true) {
-    //     mssqlToPg.transferDataMSSQLToPostgres();
-    //     std::this_thread::sleep_for(
-    //         std::chrono::seconds(SyncConfig::getSyncInterval()));
-    //   }
-    // }));
-
     // Bucle principal solo para reporting y setup periódico
     while (true) {
       loadConfigFromDatabase(pgConn);
@@ -79,7 +64,6 @@ public:
       minutes_counter += 1;
       if (minutes_counter >= 2) {
         mariaToPg.setupTableTargetMariaDBToPostgres();
-        // mssqlToPg.setupTableTargetMSSQLToPostgres();
 
         // Limpiar catálogo cada 2 minutos
         CatalogClean cleaner;

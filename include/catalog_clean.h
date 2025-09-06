@@ -26,9 +26,6 @@ public:
       // Limpiar tablas que no existen en MariaDB
       cleanNonExistentMariaDBTables(pgConn);
 
-      // Limpiar tablas que no existen en MSSQL
-      cleanNonExistentMSSQLTables(pgConn);
-
       // Limpiar tablas huérfanas (sin conexión válida)
       cleanOrphanedTables(pgConn);
 
@@ -45,7 +42,7 @@ private:
       // Obtener todas las tablas marcadas como PostgreSQL
       auto results =
           txn.exec("SELECT schema_name, table_name FROM metadata.catalog "
-                   "WHERE db_engine='PostgreSQL' AND active=true;");
+                   "WHERE db_engine='PostgreSQL';");
 
       for (const auto &row : results) {
         std::string schema_name = row[0].as<std::string>();
@@ -84,7 +81,7 @@ private:
       // Obtener todas las tablas marcadas como MariaDB
       auto results = txn.exec("SELECT schema_name, table_name, "
                               "connection_string FROM metadata.catalog "
-                              "WHERE db_engine='MariaDB' AND active=true;");
+                              "WHERE db_engine='MariaDB';");
 
       for (const auto &row : results) {
         std::string schema_name = row[0].as<std::string>();
@@ -124,58 +121,6 @@ private:
     }
   }
 
-  void cleanNonExistentMSSQLTables(pqxx::connection &pgConn) {
-    try {
-      pqxx::work txn(pgConn);
-
-      // Obtener todas las tablas marcadas como MSSQL
-      auto results = txn.exec("SELECT schema_name, table_name, "
-                              "connection_string FROM metadata.catalog "
-                              "WHERE db_engine='MSSQL' AND active=true;");
-
-      for (const auto &row : results) {
-        std::string schema_name = row[0].as<std::string>();
-        std::string table_name = row[1].as<std::string>();
-        std::string connection_string = row[2].as<std::string>();
-
-        // Verificar si la tabla existe en MSSQL usando sqlcmd
-        std::string checkQuery =
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_schema='" +
-            schema_name +
-            "' "
-            "AND table_name='" +
-            table_name + "';";
-
-        std::string command = "sqlcmd -S " + connection_string + " -Q \"" +
-                              checkQuery + "\" -h -1";
-        FILE *pipe = popen(command.c_str(), "r");
-        if (!pipe)
-          continue;
-
-        char buffer[128];
-        std::string result = "";
-        while (fgets(buffer, sizeof buffer, pipe) != nullptr) {
-          result += buffer;
-        }
-        pclose(pipe);
-
-        // Si no hay resultado o es 0, la tabla no existe
-        if (result.empty() || result.find("0") != std::string::npos) {
-          std::cerr << "Removing non-existent MSSQL table: " << schema_name
-                    << "." << table_name << std::endl;
-
-          txn.exec("DELETE FROM metadata.catalog WHERE schema_name='" +
-                   schema_name + "' AND table_name='" + table_name +
-                   "' AND db_engine='MSSQL';");
-        }
-      }
-
-      txn.commit();
-    } catch (const std::exception &e) {
-      std::cerr << "Error cleaning MSSQL tables: " << e.what() << std::endl;
-    }
-  }
 
   void cleanOrphanedTables(pqxx::connection &pgConn) {
     try {
@@ -187,7 +132,7 @@ private:
 
       // Limpiar tablas con db_engine inválido
       txn.exec("DELETE FROM metadata.catalog WHERE db_engine NOT IN "
-               "('PostgreSQL', 'MariaDB', 'MSSQL');");
+               "('PostgreSQL', 'MariaDB');");
 
       // Limpiar tablas con schema_name o table_name vacío
       txn.exec("DELETE FROM metadata.catalog WHERE schema_name IS NULL OR "

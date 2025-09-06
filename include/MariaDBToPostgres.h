@@ -5,6 +5,7 @@
 #include "SyncReporter.h"
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <iostream>
 #include <mysql/mysql.h>
 #include <pqxx/pqxx>
@@ -91,7 +92,7 @@ public:
       }
 
       if (mariaConnStrings.empty()) {
-        std::cerr << "No MariaDB connections found" << std::endl;
+        // std::cerr << "No MariaDB connections found" << std::endl;
         return;
       }
 
@@ -119,9 +120,9 @@ public:
           try {
             auto mariaConn = connectMariaDB(table.connection_string);
             if (!mariaConn) {
-              std::cerr << "Failed to connect to MariaDB for table: "
-                        << table.schema_name << "." << table.table_name
-                        << std::endl;
+              // std::cerr << "Failed to connect to MariaDB for table: "
+              //           << table.schema_name << "." << table.table_name
+              //           << std::endl;
               continue;
             }
 
@@ -193,14 +194,23 @@ public:
     try {
       pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
       auto tables = getActiveTables(pgConn);
+      // std::cerr << "=== STARTING setupTableTargetMariaDBToPostgres ===" << std::endl;
+      // std::cerr << "Found " << tables.size() << " active MariaDB tables to process" << std::endl;
 
       for (const auto &table : tables) {
         if (table.db_engine != "MariaDB")
           continue;
 
+        // std::cerr << "Processing table: " << table.schema_name << "." << table.table_name 
+        //           << " (status: " << table.status << ")" << std::endl;
+
         auto mariadbConn = connectMariaDB(table.connection_string);
-        if (!mariadbConn)
+        if (!mariadbConn) {
+          // std::cerr << "ERROR: Failed to connect to MariaDB for " 
+          //           << table.schema_name << "." << table.table_name << std::endl;
           continue;
+        }
+        // std::cerr << "Connected to MariaDB successfully" << std::endl;
 
         std::string query = "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, "
                             "COLUMN_KEY, EXTRA, CHARACTER_MAXIMUM_LENGTH "
@@ -210,6 +220,13 @@ public:
                             table.table_name + "';";
 
         auto columns = executeQueryMariaDB(mariadbConn.get(), query);
+        // std::cerr << "Got " << columns.size() << " columns from MariaDB" << std::endl;
+
+        if (columns.empty()) {
+          // std::cerr << "ERROR: No columns found for table " << table.schema_name 
+          //           << "." << table.table_name << " - skipping" << std::endl;
+          continue;
+        }
 
         std::string lowerSchema = table.schema_name;
         std::transform(lowerSchema.begin(), lowerSchema.end(),
@@ -239,6 +256,8 @@ public:
           std::string columnKey = col[3];
           std::string extra = col[4];
           std::string maxLength = col[5];
+          
+          // std::cerr << "Column: " << colName << " | Type: " << dataType << " | Nullable: " << col[2] << " | Nullable SQL: " << nullable << std::endl;
 
           std::string pgType = "TEXT";
           if (extra == "auto_increment") {
@@ -265,15 +284,19 @@ public:
           // Detectar columna de tiempo con priorización
           if (detectedTimeColumn.empty() &&
               (dataType == "timestamp" || dataType == "datetime")) {
+            // std::cerr << "Found time column candidate: " << colName << " (type: " << dataType << ")" << std::endl;
             if (colName == "updated_at") {
               detectedTimeColumn = colName;
+              // std::cerr << "Detected time column: " << colName << " (highest priority)" << std::endl;
             } else if (colName == "created_at" &&
                        detectedTimeColumn != "updated_at") {
               detectedTimeColumn = colName;
+              // std::cerr << "Detected time column: " << colName << " (second priority)" << std::endl;
             } else if (colName.find("_at") != std::string::npos &&
                        detectedTimeColumn != "updated_at" &&
                        detectedTimeColumn != "created_at") {
               detectedTimeColumn = colName;
+              // std::cerr << "Detected time column: " << colName << " (fallback)" << std::endl;
             }
           }
         }
@@ -299,7 +322,8 @@ public:
 
         // Guardar columna de tiempo detectada en metadata.catalog
         if (!detectedTimeColumn.empty()) {
-
+          // std::cerr << "Saving detected time column '" << detectedTimeColumn 
+          //           << "' to metadata.catalog" << std::endl;
           pqxx::work txn(pgConn);
           txn.exec("UPDATE metadata.catalog SET last_sync_column='" +
                    escapeSQL(detectedTimeColumn) + "' WHERE schema_name='" +
@@ -307,6 +331,8 @@ public:
                    escapeSQL(table.table_name) + "' AND db_engine='MariaDB';");
           txn.commit();
         } else {
+          // std::cerr << "WARNING: No time column detected for table " 
+          //           << table.schema_name << "." << table.table_name << std::endl;
         }
       }
     } catch (const std::exception &e) {
@@ -317,15 +343,22 @@ public:
 
   void transferDataMariaDBToPostgres() {
     try {
+      // std::cerr << "=== STARTING transferDataMariaDBToPostgres ===" << std::endl;
       pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
       auto tables = getActiveTables(pgConn);
+      // std::cerr << "Found " << tables.size() << " active tables to process" << std::endl;
 
       for (auto &table : tables) {
         if (table.db_engine != "MariaDB")
           continue;
 
+        // Actualizar tabla actualmente procesando para el dashboard
+        SyncReporter::currentProcessingTable = table.schema_name + "." + table.table_name + " (" + table.status + ")";
+
         auto mariadbConn = connectMariaDB(table.connection_string);
         if (!mariadbConn) {
+          // std::cerr << "ERROR: Failed to connect to MariaDB for " 
+          //           << table.schema_name << "." << table.table_name << std::endl;
           updateStatus(pgConn, table.schema_name, table.table_name, "ERROR");
           continue;
         }
@@ -360,7 +393,9 @@ public:
         }
 
         // Lógica simple basada en counts reales
+        // std::cerr << "Logic check: sourceCount=" << sourceCount << ", targetCount=" << targetCount << std::endl;
         if (sourceCount == 0) {
+          // std::cerr << "Source count is 0, setting NO_DATA or ERROR" << std::endl;
           if (targetCount == 0) {
             updateStatus(pgConn, schema_name, table_name, "NO_DATA", 0);
           } else {
@@ -371,8 +406,10 @@ public:
 
         // Si sourceCount = targetCount, verificar si hay cambios incrementales
         if (sourceCount == targetCount) {
+          // std::cerr << "Source count equals target count, checking for incremental changes" << std::endl;
           // Si tiene columna de tiempo, verificar cambios incrementales
           if (!table.last_sync_column.empty()) {
+            // std::cerr << "Has time column: " << table.last_sync_column << std::endl;
             // Obtener MAX de MariaDB y PostgreSQL para comparar
             std::string mariaMaxQuery = "SELECT MAX(`" +
                                         table.last_sync_column + "`) FROM `" +
@@ -400,21 +437,10 @@ public:
                 pgMaxTime = pgMaxRes[0][0].as<std::string>();
               }
 
-              std::cerr << "MariaDB MAX(" << table.last_sync_column
-                        << "): " << mariaMaxTime << std::endl;
-              std::cerr << "PostgreSQL MAX(" << table.last_sync_column
-                        << "): " << pgMaxTime << std::endl;
-
-              // Si los MAX son iguales, están sincronizados
               if (mariaMaxTime == pgMaxTime) {
-                std::cerr << "MAX times are equal, setting PERFECT_MATCH"
-                          << std::endl;
                 updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
                              targetCount);
               } else {
-                std::cerr << "MAX times differ, setting LISTENING_CHANGES for "
-                             "incremental sync"
-                          << std::endl;
                 updateStatus(pgConn, schema_name, table_name,
                              "LISTENING_CHANGES", targetCount);
               }
@@ -425,9 +451,6 @@ public:
                            targetCount);
             }
           } else {
-            std::cerr << "Source equals target without time column, setting "
-                         "PERFECT_MATCH"
-                      << std::endl;
             updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
                          targetCount);
           }
@@ -436,9 +459,13 @@ public:
 
         // Si sourceCount > targetCount, necesitamos transferir datos faltantes
         if (sourceCount < targetCount) {
+          // std::cerr << "Source less than target, setting ERROR" << std::endl;
           updateStatus(pgConn, schema_name, table_name, "ERROR", targetCount);
           continue;
         }
+
+        // std::cerr << "Source > Target, proceeding with data transfer..." << std::endl;
+        // std::cerr << "Table status: " << table.status << std::endl;
 
         auto columns = executeQueryMariaDB(
             mariadbConn.get(),
@@ -487,6 +514,7 @@ public:
         }
 
         if (table.status == "FULL_LOAD") {
+          // std::cerr << "Processing FULL_LOAD table: " << schema_name << "." << table_name << std::endl;
           pqxx::work txn(pgConn);
           auto offsetCheck = txn.exec(
               "SELECT last_offset FROM metadata.catalog WHERE schema_name='" +
@@ -497,18 +525,23 @@ public:
           bool shouldTruncate = true;
           if (!offsetCheck.empty() && !offsetCheck[0][0].is_null()) {
             std::string currentOffset = offsetCheck[0][0].as<std::string>();
+            // std::cerr << "Current offset: " << currentOffset << std::endl;
             if (currentOffset != "0" && !currentOffset.empty()) {
               shouldTruncate = false;
+              // std::cerr << "Skipping truncate due to non-zero offset" << std::endl;
             }
           }
 
           if (shouldTruncate) {
+            // std::cerr << "Truncating table: " << lowerSchemaName << "." << table_name << std::endl;
             pqxx::work txn(pgConn);
             txn.exec("TRUNCATE TABLE \"" + lowerSchemaName + "\".\"" +
                      table_name + "\" CASCADE;");
             txn.commit();
+            // std::cerr << "Table truncated successfully" << std::endl;
           }
         } else if (table.status == "RESET") {
+          // std::cerr << "Processing RESET table: " << schema_name << "." << table_name << std::endl;
           pqxx::work txn(pgConn);
           txn.exec("DROP TABLE IF EXISTS \"" + lowerSchemaName + "\".\"" +
                    table_name + "\" CASCADE;");
@@ -522,7 +555,6 @@ public:
           continue;
         }
 
-        const size_t CHUNK_SIZE = SyncConfig::getChunkSize();
         size_t totalProcessed = 0;
 
         std::string offsetQuery =
@@ -543,14 +575,17 @@ public:
         }
 
         // Transferir datos faltantes usando OFFSET
+        // std::cerr << "Starting data transfer loop..." << std::endl;
         bool hasMoreData = true;
         while (hasMoreData) {
+          const size_t CHUNK_SIZE = SyncConfig::getChunkSize();
+          // std::cerr << "Building select query..." << std::endl;
           std::string selectQuery =
               "SELECT * FROM `" + schema_name + "`.`" + table_name + "`";
 
           // Para sincronización incremental, usar el MAX de PostgreSQL como
-          // punto de partida
-          if (!table.last_sync_column.empty()) {
+          // punto de partida (SOLO si NO es FULL_LOAD)
+          if (!table.last_sync_column.empty() && table.status != "FULL_LOAD") {
             std::string pgMaxQuery = "SELECT MAX(\"" + table.last_sync_column +
                                      "\") FROM \"" + lowerSchemaName + "\".\"" +
                                      table_name + "\";";
@@ -562,14 +597,14 @@ public:
 
               if (!pgMaxRes.empty() && !pgMaxRes[0][0].is_null()) {
                 std::string pgMaxTime = pgMaxRes[0][0].as<std::string>();
-                std::cerr << "Using PostgreSQL MAX(" << table.last_sync_column
-                          << ") for incremental sync: " << pgMaxTime
-                          << std::endl;
+                // std::cerr << "Using PostgreSQL MAX(" << table.last_sync_column
+                //           << ") for incremental sync: " << pgMaxTime
+                //           << std::endl;
                 selectQuery += " WHERE `" + table.last_sync_column + "` > '" +
                                pgMaxTime + "'";
               } else if (!table.last_sync_time.empty()) {
-                std::cerr << "Using last_sync_time for incremental sync: "
-                          << table.last_sync_time << std::endl;
+                // std::cerr << "Using last_sync_time for incremental sync: "
+                //           << table.last_sync_time << std::endl;
                 selectQuery += " WHERE `" + table.last_sync_column + "` > '" +
                                table.last_sync_time + "'";
               }
@@ -577,14 +612,19 @@ public:
               std::cerr << "Error getting PostgreSQL MAX: " << e.what()
                         << std::endl;
             }
+          } else if (table.status == "FULL_LOAD") {
+            // std::cerr << "FULL_LOAD mode: fetching ALL data without time filter" << std::endl;
           }
 
           selectQuery += " LIMIT " + std::to_string(CHUNK_SIZE) + " OFFSET " +
                          std::to_string(targetCount) + ";";
 
+          // std::cerr << "Executing select query: " << selectQuery << std::endl;
           auto results = executeQueryMariaDB(mariadbConn.get(), selectQuery);
+          // std::cerr << "Query executed, got " << results.size() << " rows" << std::endl;
 
           if (results.empty()) {
+            // std::cerr << "No more data, ending transfer loop" << std::endl;
             hasMoreData = false;
             break;
           }
@@ -630,10 +670,12 @@ public:
             }
 
             if (rowsInserted > 0) {
+              // std::cerr << "Inserting " << rowsInserted << " rows using COPY..." << std::endl;
               try {
                 pqxx::work txn(pgConn);
                 std::string tableName =
                     "\"" + lowerSchemaName + "\".\"" + table_name + "\"";
+                // std::cerr << "Using COPY to table: " << tableName << std::endl;
                 pqxx::stream_to stream(txn, tableName);
 
                 for (const auto &row : results) {
@@ -641,9 +683,78 @@ public:
                     std::vector<std::optional<std::string>> values;
                     for (size_t i = 0; i < row.size(); ++i) {
                       if (row[i] == "NULL" || row[i].empty()) {
-                        values.push_back(std::nullopt);
+                        // Para columnas que podrían ser NOT NULL, usar valores por defecto apropiados
+                        std::string defaultValue = "NO_DATA";
+                        std::string columnType = columnTypes[i];
+                        std::transform(columnType.begin(), columnType.end(), columnType.begin(), ::toupper);
+                        
+                        if (columnType.find("TIMESTAMP") != std::string::npos || 
+                            columnType.find("DATETIME") != std::string::npos) {
+                          defaultValue = "1970-01-01 00:00:00";
+                        } else if (columnType.find("DATE") != std::string::npos) {
+                          defaultValue = "1970-01-01";
+                        } else if (columnType.find("TIME") != std::string::npos) {
+                          defaultValue = "00:00:00";
+                        } else if (columnType.find("INT") != std::string::npos ||
+                                   columnType.find("BIGINT") != std::string::npos ||
+                                   columnType.find("SMALLINT") != std::string::npos ||
+                                   columnType.find("TINYINT") != std::string::npos) {
+                          defaultValue = "0";
+                        } else if (columnType.find("DECIMAL") != std::string::npos ||
+                                   columnType.find("NUMERIC") != std::string::npos ||
+                                   columnType.find("FLOAT") != std::string::npos ||
+                                   columnType.find("DOUBLE") != std::string::npos) {
+                          defaultValue = "0.0";
+                        } else if (columnType.find("BOOLEAN") != std::string::npos ||
+                                   columnType.find("BOOL") != std::string::npos) {
+                          defaultValue = "false";
+                        }
+                        
+                        //DEBUG
+                        //std::cerr << "NULL value for column '" << columnNames[i] 
+                                  //<< "' (type: " << columnTypes[i] << " -> " << columnType 
+                                  //<< ") -> using default: '" << defaultValue << "'" << std::endl;
+                        values.push_back(defaultValue);
                       } else {
-                        values.push_back(row[i]);
+                        
+                        std::string cleanValue = row[i];
+                        
+                        // Transformar fechas inválidas de MariaDB a fechas válidas para PostgreSQL
+                        if (columnTypes[i].find("TIMESTAMP") != std::string::npos || 
+                            columnTypes[i].find("DATETIME") != std::string::npos ||
+                            columnTypes[i].find("DATE") != std::string::npos) {
+                          if (cleanValue == "0000-00-00 00:00:00" || cleanValue == "0000-00-00") {
+                            cleanValue = "1970-01-01 00:00:00";
+                          } else if (cleanValue.find("0000-00-00") != std::string::npos) {
+                            cleanValue = "1970-01-01 00:00:00";
+                          } else if (cleanValue.find("-00 00:00:00") != std::string::npos) {
+                            // Transformar fechas con día 00: "1989-09-00 00:00:00" -> "1989-09-01 00:00:00"
+                            size_t pos = cleanValue.find("-00 00:00:00");
+                            if (pos != std::string::npos) {
+                              cleanValue.replace(pos, 3, "-01");
+                            }
+                          } else if (cleanValue.find("-00") != std::string::npos) {
+                            // Transformar fechas con día 00 sin hora: "1989-09-00" -> "1989-09-01"
+                            size_t pos = cleanValue.find("-00");
+                            if (pos != std::string::npos) {
+                              cleanValue.replace(pos, 3, "-01");
+                            }
+                          }
+                        }
+                        
+                        for (char &c : cleanValue) {
+                          if (static_cast<unsigned char>(c) > 127) {
+                            c = '?';
+                          }
+                        }
+                        
+                        
+                        cleanValue.erase(std::remove_if(cleanValue.begin(), cleanValue.end(),
+                          [](unsigned char c) {
+                            return c < 32 && c != 9 && c != 10 && c != 13;
+                          }), cleanValue.end());
+                        
+                        values.push_back(cleanValue);
                       }
                     }
                     stream << values;
@@ -651,8 +762,10 @@ public:
                 }
                 stream.complete();
                 txn.commit();
+                // std::cerr << "COPY completed successfully" << std::endl;
               } catch (const std::exception &e) {
-                rowsInserted = 0; // Reset to 0 if COPY failed
+                std::cerr << "COPY failed: " << e.what() << std::endl;
+                rowsInserted = 0;
               }
             }
 
@@ -660,7 +773,7 @@ public:
             std::cerr << "Error processing data: " << e.what() << std::endl;
           }
 
-          // Actualizar targetCount después de inserción exitosa
+          
           targetCount += rowsInserted;
 
           if (targetCount >= sourceCount) {
@@ -668,9 +781,8 @@ public:
           }
         }
 
-        // Actualizar catalog DESPUÉS de completar la transferencia exitosa
+        
         if (targetCount > 0) {
-          // Determinar estado final basado en sincronización
           if (targetCount >= sourceCount) {
             updateStatus(pgConn, schema_name, table_name, "PERFECT_MATCH",
                          targetCount);
@@ -679,6 +791,10 @@ public:
                          targetCount);
           }
         }
+        
+        // Limpiar tabla actualmente procesando cuando termine
+        SyncReporter::lastProcessingTable = SyncReporter::currentProcessingTable;
+        SyncReporter::currentProcessingTable = "";
       }
     } catch (const std::exception &e) {
       std::cerr << "Error in transferDataMariaDBToPostgres: " << e.what()
@@ -692,7 +808,7 @@ public:
     try {
       pqxx::work txn(pgConn);
 
-      // Obtener la columna de tiempo para calcular el max
+      
       auto columnQuery =
           txn.exec("SELECT last_sync_column FROM metadata.catalog "
                    "WHERE schema_name='" +
@@ -708,11 +824,20 @@ public:
                                 status + "', last_offset='" +
                                 std::to_string(offset) + "'";
 
-      // Si tiene columna de tiempo, usar MAX de esa columna, sino NOW()
+      
       if (!lastSyncColumn.empty()) {
-        updateQuery += ", last_sync_time=(SELECT MAX(\"" + lastSyncColumn +
-                       "\") FROM \"" + schema_name + "\".\"" + table_name +
-                       "\")";
+        
+        auto tableCheck = txn.exec("SELECT COUNT(*) FROM information_schema.tables "
+                                  "WHERE table_schema='" + schema_name + "' "
+                                  "AND table_name='" + table_name + "';");
+        
+        if (!tableCheck.empty() && tableCheck[0][0].as<int>() > 0) {
+          updateQuery += ", last_sync_time=(SELECT MAX(\"" + lastSyncColumn +
+                         "\") FROM \"" + schema_name + "\".\"" + table_name +
+                         "\")";
+        } else {
+          updateQuery += ", last_sync_time=NOW()";
+        }
       } else {
         updateQuery += ", last_sync_time=NOW()";
       }
@@ -844,7 +969,11 @@ std::unordered_map<std::string, std::string> MariaDBToPostgres::dataTypeMap = {
     {"tinyblob", "BYTEA"},
     {"json", "JSON"},
     {"boolean", "BOOLEAN"},
-    {"bit", "BIT"}};
+    {"bit", "BIT"},
+    {"timestamp", "TIMESTAMP"},
+    {"datetime", "TIMESTAMP"},
+    {"date", "DATE"},
+    {"time", "TIME"}};
 
 std::unordered_map<std::string, std::string> MariaDBToPostgres::collationMap = {
     {"utf8_general_ci", "en_US.utf8"},
