@@ -491,7 +491,7 @@ public:
           // std::cerr << "Processing RESET table: " << schema_name << "." <<
           // table_name << std::endl;
           pqxx::work txn(pgConn);
-          txn.exec("DROP TABLE IF EXISTS \"" + lowerSchemaName + "\".\"" +
+          txn.exec("TRUNCATE TABLE \"" + lowerSchemaName + "\".\"" +
                    table_name + "\" CASCADE;");
           txn.exec("UPDATE metadata.catalog SET last_offset='0' WHERE "
                    "schema_name='" +
