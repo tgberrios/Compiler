@@ -4,7 +4,6 @@
 #include "Config.h"
 #include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
-#include "PostgresToMariaDB.h"
 #include "SyncReporter.h"
 #include "catalog_manager.h"
 #include "logger.h"
@@ -26,7 +25,6 @@ public:
     Logger::info("StreamingData", "DataSync system started");
 
     MariaDBToPostgres mariaToPg;
-    PostgresToMariaDB pgToMaria;
     MSSQLToPostgres mssqlToPg;
     SyncReporter reporter;
     CatalogManager catalogManager;
@@ -43,81 +41,41 @@ public:
     mariaToPg.setupTableTargetMariaDBToPostgres();
 
     Logger::info("StreamingData",
-                 "Starting PostgreSQL -> MariaDB catalog synchronization");
-    catalogManager.syncCatalogPostgresToMariaDB();
-    Logger::info("StreamingData",
-                 "Setting up target tables PostgreSQL -> MariaDB");
-    pgToMaria.setupTableTargetPostgresToMariaDB();
-
-    Logger::info("StreamingData",
                  "Starting MSSQL -> PostgreSQL catalog synchronization");
     catalogManager.syncCatalogMSSQLToPostgres();
     Logger::info("StreamingData",
                  "Setting up target tables MSSQL -> PostgreSQL");
     mssqlToPg.setupTableTargetMSSQLToPostgres();
 
-    std::atomic<bool> stop_threads{false};
+    // Ejecutar transferencias de forma secuencial para evitar conflictos de
+    // concurrencia
+    Logger::info("StreamingData", "Starting sequential data transfer process");
 
-    // Ejecutar transferencias continuas sin interrupciones
-    std::vector<std::future<void>> maria_futures;
-    std::vector<std::future<void>> pg_futures;
-    std::vector<std::future<void>> mssql_futures;
+    // Bucle principal con transferencias secuenciales
+    Logger::info("StreamingData", "Starting main monitoring loop");
+    while (true) {
+      try {
+        Logger::debug("StreamingData", "Loading configuration from database");
+        loadConfigFromDatabase(pgConn);
 
-    // Lanzar UN SOLO thread por tipo de BD (sin paralelización múltiple)
-    Logger::info("StreamingData",
-                 "Starting MariaDB -> PostgreSQL transfer thread");
-    maria_futures.emplace_back(std::async(std::launch::async, [&mariaToPg]() {
-      Logger::info("MariaDBToPostgres", "Transfer thread started");
-      while (true) {
+        // Ejecutar transferencias de forma secuencial para evitar conflictos
+        Logger::debug("StreamingData",
+                      "Executing MariaDB -> PostgreSQL transfer");
         try {
           mariaToPg.transferDataMariaDBToPostgres();
         } catch (const std::exception &e) {
           Logger::error("MariaDBToPostgres",
                         "Transfer error: " + std::string(e.what()));
         }
-        std::this_thread::sleep_for(
-            std::chrono::seconds(SyncConfig::getSyncInterval()));
-      }
-    }));
 
-    Logger::info("StreamingData",
-                 "Starting PostgreSQL -> MariaDB transfer thread");
-    pg_futures.emplace_back(std::async(std::launch::async, [&pgToMaria]() {
-      Logger::info("PostgresToMariaDB", "Transfer thread started");
-      while (true) {
-        try {
-          pgToMaria.transferDataPostgresToMariaDB();
-        } catch (const std::exception &e) {
-          Logger::error("PostgresToMariaDB",
-                        "Transfer error: " + std::string(e.what()));
-        }
-        std::this_thread::sleep_for(
-            std::chrono::seconds(SyncConfig::getSyncInterval()));
-      }
-    }));
-
-    Logger::info("StreamingData",
-                 "Starting MSSQL -> PostgreSQL transfer thread");
-    mssql_futures.emplace_back(std::async(std::launch::async, [&mssqlToPg]() {
-      Logger::info("MSSQLToPostgres", "Transfer thread started");
-      while (true) {
+        Logger::debug("StreamingData",
+                      "Executing MSSQL -> PostgreSQL transfer");
         try {
           mssqlToPg.transferDataMSSQLToPostgres();
         } catch (const std::exception &e) {
           Logger::error("MSSQLToPostgres",
                         "Transfer error: " + std::string(e.what()));
         }
-        std::this_thread::sleep_for(
-            std::chrono::seconds(SyncConfig::getSyncInterval()));
-      }
-    }));
-
-    // Bucle principal solo para reporting y setup periódico
-    Logger::info("StreamingData", "Starting main monitoring loop");
-    while (true) {
-      try {
-        Logger::debug("StreamingData", "Loading configuration from database");
-        loadConfigFromDatabase(pgConn);
 
         Logger::debug("StreamingData", "Generating full report");
         reporter.generateFullReport(pgConn);
