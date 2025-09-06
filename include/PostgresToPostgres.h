@@ -373,8 +373,16 @@ private:
       std::string query =
           "SELECT COUNT(*) FROM \"" + schemaName + "\".\"" + tableName + "\"";
 
+      // Solo usar filtro de tiempo si lastOffset es un timestamp válido
       if (!timeColumn.empty() && !lastOffset.empty() && lastOffset != "0") {
-        query += " WHERE \"" + timeColumn + "\" > '" + lastOffset + "'";
+        // Verificar si lastOffset es un número (para conteo total) o timestamp
+        try {
+          std::stoi(lastOffset);
+          // Si es un número, no usar filtro de tiempo para conteo total
+        } catch (...) {
+          // Si no es un número, asumir que es un timestamp
+          query += " WHERE \"" + timeColumn + "\" > '" + lastOffset + "'";
+        }
       }
 
       auto result = txn.exec(query);
