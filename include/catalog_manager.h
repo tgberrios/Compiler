@@ -327,8 +327,7 @@ public:
         pqxx::work txn(pgConn);
         auto results =
             txn.exec("SELECT connection_string FROM metadata.catalog "
-                     "WHERE db_engine='PostgreSQL' AND active=true AND "
-                     "replicate_to_postgres=true;");
+                     "WHERE db_engine='PostgreSQL' AND active=true;");
         txn.commit();
 
         for (const auto &row : results) {
@@ -356,8 +355,7 @@ public:
               txn.exec("SELECT COUNT(*) FROM metadata.catalog "
                        "WHERE connection_string='" +
                        escapeSQL(connStr) +
-                       "' AND db_engine='PostgreSQL' AND active=true AND "
-                       "replicate_to_postgres=true "
+                       "' AND db_engine='PostgreSQL' AND active=true "
                        "AND last_sync_time > NOW() - INTERVAL '5 minutes';");
           txn.commit();
 
@@ -438,11 +436,11 @@ public:
                          "(schema_name, table_name, cluster_name, db_engine, "
                          "connection_string, "
                          "last_sync_time, last_sync_column, status, "
-                         "last_offset, active, replicate_to_postgres) "
+                         "last_offset, active) "
                          "VALUES ('" +
                          escapeSQL(schemaName) + "', '" + escapeSQL(tableName) +
                          "', '', 'PostgreSQL', '" + escapeSQL(connStr) +
-                         "', NOW(), '', 'PENDING', '0', false, true);");
+                         "', NOW(), '', 'PENDING', '0', false);");
               }
             }
             txn.commit();
@@ -721,8 +719,7 @@ private:
       // fuentes)
       auto results =
           txn.exec("SELECT schema_name, table_name FROM metadata.catalog "
-                   "WHERE db_engine='PostgreSQL' AND (replicate_to_postgres IS "
-                   "NULL OR replicate_to_postgres = false);");
+                   "WHERE db_engine='PostgreSQL';");
 
       for (const auto &row : results) {
         std::string schema_name = row[0].as<std::string>();

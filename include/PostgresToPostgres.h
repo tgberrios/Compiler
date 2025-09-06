@@ -21,8 +21,7 @@ public:
       pqxx::work txn(pgConn);
       auto results = txn.exec("SELECT schema_name, table_name, "
                               "connection_string FROM metadata.catalog "
-                              "WHERE db_engine='PostgreSQL' AND active=true "
-                              "AND replicate_to_postgres=true;");
+                              "WHERE db_engine='PostgreSQL' AND active=true;");
 
       for (const auto &row : results) {
         if (row.size() < 3)
@@ -83,8 +82,7 @@ public:
         auto results =
             txn.exec("SELECT schema_name, table_name, connection_string, "
                      "last_offset, status FROM metadata.catalog "
-                     "WHERE db_engine='PostgreSQL' AND active=true AND "
-                     "replicate_to_postgres=true;");
+                     "WHERE db_engine='PostgreSQL' AND active=true;");
 
         for (const auto &row : results) {
           if (row.size() < 5)
