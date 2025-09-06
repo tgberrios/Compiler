@@ -314,6 +314,146 @@ public:
     }
   }
 
+  void syncCatalogPostgresToPostgres() {
+    try {
+      Logger::info("syncCatalogPostgresToPostgres",
+                   "Starting PostgreSQL to PostgreSQL catalog synchronization");
+      pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
+
+      std::vector<std::string> pgConnStrings;
+      {
+        pqxx::work txn(pgConn);
+        auto results =
+            txn.exec("SELECT connection_string FROM metadata.catalog "
+                     "WHERE db_engine='PostgreSQL' AND active=true AND "
+                     "replicate_to_postgres=true;");
+        txn.commit();
+
+        for (const auto &row : results) {
+          if (row.size() >= 1) {
+            pgConnStrings.push_back(row[0].as<std::string>());
+          }
+        }
+      }
+
+      Logger::info("syncCatalogPostgresToPostgres",
+                   "Found " + std::to_string(pgConnStrings.size()) +
+                       " PostgreSQL source connections");
+      if (pgConnStrings.empty()) {
+        Logger::warning("syncCatalogPostgresToPostgres",
+                        "No PostgreSQL source connections found in catalog");
+        return;
+      }
+
+      for (const auto &connStr : pgConnStrings) {
+        Logger::debug("syncCatalogPostgresToPostgres",
+                      "Processing connection: " + connStr);
+        {
+          pqxx::work txn(pgConn);
+          auto connectionCheck =
+              txn.exec("SELECT COUNT(*) FROM metadata.catalog "
+                       "WHERE connection_string='" +
+                       escapeSQL(connStr) +
+                       "' AND db_engine='PostgreSQL' AND active=true AND "
+                       "replicate_to_postgres=true "
+                       "AND last_sync_time > NOW() - INTERVAL '5 minutes';");
+          txn.commit();
+
+          if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
+            int connectionCount = connectionCheck[0][0].as<int>();
+            Logger::debug("syncCatalogPostgresToPostgres",
+                          "Recent sync count: " +
+                              std::to_string(connectionCount));
+            if (connectionCount > 0) {
+              Logger::debug("syncCatalogPostgresToPostgres",
+                            "Skipping due to recent sync");
+              continue;
+            }
+          }
+        }
+
+        Logger::debug("syncCatalogPostgresToPostgres",
+                      "Connecting to source PostgreSQL: " + connStr);
+        auto sourcePgConn = connectPostgres(connStr);
+        if (!sourcePgConn) {
+          Logger::error("syncCatalogPostgresToPostgres",
+                        "Failed to connect to source PostgreSQL");
+          continue;
+        }
+
+        std::string discoverQuery =
+            "SELECT table_schema, table_name "
+            "FROM information_schema.tables "
+            "WHERE table_schema NOT IN ('information_schema', 'pg_catalog', "
+            "'pg_toast', 'pg_temp_1', 'pg_toast_temp_1', 'metadata') "
+            "AND table_type = 'BASE TABLE' "
+            "ORDER BY table_schema, table_name;";
+
+        Logger::debug("syncCatalogPostgresToPostgres",
+                      "Executing discovery query...");
+        pqxx::work sourceTxn(*sourcePgConn);
+        auto discoveredTables = sourceTxn.exec(discoverQuery);
+        sourceTxn.commit();
+
+        Logger::info("syncCatalogPostgresToPostgres",
+                     "Found " + std::to_string(discoveredTables.size()) +
+                         " tables");
+
+        for (const auto &row : discoveredTables) {
+          if (row.size() < 2)
+            continue;
+
+          std::string schemaName = row[0].as<std::string>();
+          std::string tableName = row[1].as<std::string>();
+          Logger::debug("syncCatalogPostgresToPostgres",
+                        "Processing table: " + schemaName + "." + tableName);
+
+          {
+            pqxx::work txn(pgConn);
+            auto existsCheck =
+                txn.exec("SELECT COUNT(*) FROM metadata.catalog "
+                         "WHERE schema_name = '" +
+                         escapeSQL(schemaName) + "' AND table_name = '" +
+                         escapeSQL(tableName) + "' AND connection_string = '" +
+                         escapeSQL(connStr) + "';");
+
+            if (!existsCheck.empty() && !existsCheck[0][0].is_null()) {
+              int exists = existsCheck[0][0].as<int>();
+              if (exists > 0) {
+                Logger::debug("syncCatalogPostgresToPostgres",
+                              "Table " + schemaName + "." + tableName +
+                                  " already exists, updating timestamp");
+                txn.exec("UPDATE metadata.catalog SET last_sync_time = NOW() "
+                         "WHERE schema_name = '" +
+                         escapeSQL(schemaName) + "' AND table_name = '" +
+                         escapeSQL(tableName) + "' AND connection_string = '" +
+                         escapeSQL(connStr) + "';");
+              } else {
+                Logger::info("syncCatalogPostgresToPostgres",
+                             "Inserting new table " + schemaName + "." +
+                                 tableName);
+                txn.exec("INSERT INTO metadata.catalog "
+                         "(schema_name, table_name, cluster_name, db_engine, "
+                         "connection_string, "
+                         "last_sync_time, last_sync_column, status, "
+                         "last_offset, active, replicate_to_postgres) "
+                         "VALUES ('" +
+                         escapeSQL(schemaName) + "', '" + escapeSQL(tableName) +
+                         "', '', 'PostgreSQL', '" + escapeSQL(connStr) +
+                         "', NOW(), '', 'PENDING', '0', false, true);");
+              }
+            }
+            txn.commit();
+          }
+        }
+      }
+    } catch (const std::exception &e) {
+      Logger::error("syncCatalogPostgresToPostgres",
+                    "Error in syncCatalogPostgresToPostgres: " +
+                        std::string(e.what()));
+    }
+  }
+
 private:
   std::string escapeSQL(const std::string &value) {
     std::string escaped = value;
@@ -331,10 +471,12 @@ private:
                     "Starting PostgreSQL table cleanup");
       pqxx::work txn(pgConn);
 
-      // Obtener todas las tablas marcadas como PostgreSQL
+      // Obtener todas las tablas marcadas como PostgreSQL (solo destinos, no
+      // fuentes)
       auto results =
           txn.exec("SELECT schema_name, table_name FROM metadata.catalog "
-                   "WHERE db_engine='PostgreSQL';");
+                   "WHERE db_engine='PostgreSQL' AND (replicate_to_postgres IS "
+                   "NULL OR replicate_to_postgres = false);");
 
       for (const auto &row : results) {
         std::string schema_name = row[0].as<std::string>();

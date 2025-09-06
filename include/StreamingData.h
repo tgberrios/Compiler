@@ -4,6 +4,7 @@
 #include "Config.h"
 #include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
+#include "PostgresToPostgres.h"
 #include "SyncReporter.h"
 #include "catalog_manager.h"
 #include "logger.h"
@@ -26,6 +27,7 @@ public:
 
     MariaDBToPostgres mariaToPg;
     MSSQLToPostgres mssqlToPg;
+    PostgresToPostgres pgToPg;
     SyncReporter reporter;
     CatalogManager catalogManager;
 
@@ -46,6 +48,13 @@ public:
     Logger::info("StreamingData",
                  "Setting up target tables MSSQL -> PostgreSQL");
     mssqlToPg.setupTableTargetMSSQLToPostgres();
+
+    Logger::info("StreamingData",
+                 "Starting PostgreSQL -> PostgreSQL catalog synchronization");
+    catalogManager.syncCatalogPostgresToPostgres();
+    Logger::info("StreamingData",
+                 "Setting up target tables PostgreSQL -> PostgreSQL");
+    pgToPg.setupTableTargetPostgresToPostgres();
 
     // Ejecutar transferencias de forma secuencial para evitar conflictos de
     // concurrencia
@@ -77,6 +86,15 @@ public:
                         "Transfer error: " + std::string(e.what()));
         }
 
+        Logger::debug("StreamingData",
+                      "Executing PostgreSQL -> PostgreSQL transfer");
+        try {
+          pgToPg.transferDataPostgresToPostgres();
+        } catch (const std::exception &e) {
+          Logger::error("PostgresToPostgres",
+                        "Transfer error: " + std::string(e.what()));
+        }
+
         Logger::debug("StreamingData", "Generating full report");
         reporter.generateFullReport(pgConn);
 
@@ -91,6 +109,11 @@ public:
           Logger::debug("StreamingData",
                         "Starting MSSQL -> PostgreSQL catalog synchronization");
           catalogManager.syncCatalogMSSQLToPostgres();
+
+          Logger::debug(
+              "StreamingData",
+              "Starting PostgreSQL -> PostgreSQL catalog synchronization");
+          catalogManager.syncCatalogPostgresToPostgres();
 
           Logger::debug("StreamingData", "Cleaning catalog");
           catalogManager.cleanCatalog();
