@@ -206,7 +206,7 @@ public:
             "SELECT table_schema, table_name "
             "FROM information_schema.tables "
             "WHERE table_schema NOT IN ('information_schema', 'pg_catalog', "
-            "'pg_toast', 'pg_temp_1', 'pg_toast_temp_1') "
+            "'pg_toast', 'pg_temp_1', 'pg_toast_temp_1', 'metadata') "
             "AND table_type = 'BASE TABLE' "
             "ORDER BY table_schema, table_name;";
 
