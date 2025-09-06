@@ -5,7 +5,7 @@
 #include "MariaDBToPostgres.h"
 #include "PostgresToMariaDB.h"
 #include "SyncReporter.h"
-#include "catalog_clean.h"
+#include "catalog_manager.h"
 #include <atomic>
 #include <chrono>
 #include <future>
@@ -23,14 +23,15 @@ public:
     MariaDBToPostgres mariaToPg;
     PostgresToMariaDB pgToMaria;
     SyncReporter reporter;
+    CatalogManager catalogManager;
 
     int minutes_counter = 0;
     pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
 
-    mariaToPg.syncCatalogMariaDBToPostgres();
+    catalogManager.syncCatalogMariaDBToPostgres();
     mariaToPg.setupTableTargetMariaDBToPostgres();
 
-    pgToMaria.syncCatalogPostgresToMariaDB();
+    catalogManager.syncCatalogPostgresToMariaDB();
     pgToMaria.setupTableTargetPostgresToMariaDB();
 
     std::atomic<bool> stop_threads{false};
@@ -66,8 +67,7 @@ public:
         mariaToPg.setupTableTargetMariaDBToPostgres();
 
         // Limpiar catálogo cada 2 minutos
-        CatalogClean cleaner;
-        cleaner.cleanCatalog();
+        catalogManager.cleanCatalog();
 
         minutes_counter = 0;
       }
