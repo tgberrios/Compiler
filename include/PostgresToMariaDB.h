@@ -3,6 +3,7 @@
 
 #include "Config.h"
 #include "SyncReporter.h"
+#include "logger.h"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -69,7 +70,8 @@ public:
         data.push_back(t);
       }
     } catch (const std::exception &e) {
-      std::cerr << "Error getting active tables: " << e.what() << std::endl;
+      Logger::error("getActiveTables",
+                    "Error getting active tables: " + std::string(e.what()));
     }
 
     return data;
@@ -135,12 +137,14 @@ public:
         try {
           executeQueryMariaDB(mariadbConn, createQuery);
         } catch (const std::exception &e) {
-          std::cerr << "Error creating index '" << indexName
-                    << "': " << e.what() << std::endl;
+          Logger::error("syncIndexesAndConstraints",
+                        "Error creating index '" + indexName +
+                            "': " + std::string(e.what()));
         }
       }
     } catch (const std::exception &e) {
-      std::cerr << "Error getting indexes: " << e.what() << std::endl;
+      Logger::error("syncIndexesAndConstraints",
+                    "Error getting indexes: " + std::string(e.what()));
     }
   }
 
@@ -155,8 +159,12 @@ public:
 
         auto sourcePgConn =
             connectPostgres(DatabaseConfig::getPostgresConnectionString());
-        if (!sourcePgConn)
+        if (!sourcePgConn) {
+          Logger::error("setupTableTargetPostgresToMariaDB",
+                        "Failed to connect to PostgreSQL for " +
+                            table.schema_name + "." + table.table_name);
           continue;
+        }
 
         std::string query = "SELECT c.column_name, c.data_type, c.is_nullable, "
                             "c.column_default, "
@@ -189,10 +197,10 @@ public:
 
           // Verificar si la tabla existe (tiene columnas)
           if (results.empty()) {
-            std::cerr << "Table " << table.schema_name << "."
-                      << table.table_name
-                      << " does not exist in PostgreSQL, skipping..."
-                      << std::endl;
+            Logger::warning("setupTableTargetPostgresToMariaDB",
+                            "Table " + table.schema_name + "." +
+                                table.table_name +
+                                " does not exist in PostgreSQL, skipping...");
             continue;
           }
 
@@ -307,6 +315,9 @@ public:
 
           // Guardar columna de tiempo detectada en metadata.catalog
           if (!detectedTimeColumn.empty()) {
+            Logger::debug("setupTableTargetPostgresToMariaDB",
+                          "Saving detected time column '" + detectedTimeColumn +
+                              "' to metadata.catalog");
             pqxx::work txn(pgConn);
             txn.exec("UPDATE metadata.catalog SET last_sync_column='" +
                      escapeSQL(detectedTimeColumn) + "' WHERE schema_name='" +
@@ -314,15 +325,22 @@ public:
                      escapeSQL(table.table_name) +
                      "' AND db_engine='PostgreSQL';");
             txn.commit();
+          } else {
+            Logger::warning("setupTableTargetPostgresToMariaDB",
+                            "No time column detected for table " +
+                                table.schema_name + "." + table.table_name);
           }
         } catch (const std::exception &e) {
-          std::cerr << "Error getting columns for table " << table.schema_name
-                    << "." << table.table_name << ": " << e.what() << std::endl;
+          Logger::error("setupTableTargetPostgresToMariaDB",
+                        "Error getting columns for table " + table.schema_name +
+                            "." + table.table_name + ": " +
+                            std::string(e.what()));
         }
       }
     } catch (const std::exception &e) {
-      std::cerr << "Error in setupTableTargetPostgresToMariaDB: " << e.what()
-                << std::endl;
+      Logger::error("setupTableTargetPostgresToMariaDB",
+                    "Error in setupTableTargetPostgresToMariaDB: " +
+                        std::string(e.what()));
     }
   }
 
@@ -347,18 +365,18 @@ public:
         auto sourcePgConn =
             connectPostgres(DatabaseConfig::getPostgresConnectionString());
         if (!sourcePgConn) {
-          std::cerr << "ERROR: Failed to connect to PostgreSQL for "
-                    << table.schema_name << "." << table.table_name
-                    << std::endl;
+          Logger::error("transferDataPostgresToMariaDB",
+                        "Failed to connect to PostgreSQL for " +
+                            table.schema_name + "." + table.table_name);
           updateStatus(pgConn, table.schema_name, table.table_name, "ERROR");
           continue;
         }
 
         auto mariadbConn = connectMariaDB(table.connection_string);
         if (!mariadbConn) {
-          std::cerr << "ERROR: Failed to connect to MariaDB for "
-                    << table.schema_name << "." << table.table_name
-                    << std::endl;
+          Logger::error("transferDataPostgresToMariaDB",
+                        "Failed to connect to MariaDB for " +
+                            table.schema_name + "." + table.table_name);
           updateStatus(pgConn, table.schema_name, table.table_name, "ERROR");
           continue;
         }
@@ -403,10 +421,9 @@ public:
 
           // VERIFICAR RESET PRIMERO - antes de cualquier lógica de conteos
           if (table.status == "RESET") {
-            // std::cerr << "Table is in RESET status, truncating and setting to
-            // "
-            //              "FULL_LOAD"
-            //           << std::endl;
+            Logger::info("transferDataPostgresToMariaDB",
+                         "Processing RESET table: " + schema_name + "." +
+                             table_name);
             // Para RESET, solo truncamos la tabla si existe, no la eliminamos
             // porque ya fue creada en setupTableTargetPostgresToMariaDB
             executeQueryMariaDB(mariadbConn.get(), "TRUNCATE TABLE `" +
@@ -476,8 +493,9 @@ public:
                                "LISTENING_CHANGES", targetCount);
                 }
               } catch (const std::exception &e) {
-                std::cerr << "Error comparing MAX times: " << e.what()
-                          << std::endl;
+                Logger::error("transferDataPostgresToMariaDB",
+                              "Error comparing MAX times: " +
+                                  std::string(e.what()));
                 updateStatus(pgConn, schema_name, table_name,
                              "LISTENING_CHANGES", targetCount);
               }
@@ -538,13 +556,16 @@ public:
             //           << columnResults.size() << " columns" << std::endl;
 
             if (columnResults.empty()) {
-              std::cerr << "No columns found, setting ERROR" << std::endl;
+              Logger::error("transferDataPostgresToMariaDB",
+                            "No columns found for table " + schema_name + "." +
+                                table_name + ", setting ERROR");
               updateStatus(pgConn, schema_name, table_name, "ERROR");
               continue;
             }
           } catch (const std::exception &e) {
-            std::cerr << "Error executing column query: " << e.what()
-                      << std::endl;
+            Logger::error("transferDataPostgresToMariaDB",
+                          "Error executing column query: " +
+                              std::string(e.what()));
             updateStatus(pgConn, schema_name, table_name, "ERROR");
             continue;
           }
@@ -609,6 +630,9 @@ public:
           }
 
           if (columnNames.empty()) {
+            Logger::error("transferDataPostgresToMariaDB",
+                          "No column names found for table " + schema_name +
+                              "." + table_name + ", setting ERROR");
             updateStatus(pgConn, schema_name, table_name, "ERROR");
             continue;
           }
@@ -630,11 +654,19 @@ public:
             }
 
             if (shouldTruncate) {
+              Logger::info("transferDataPostgresToMariaDB",
+                           "Truncating table: " + lowerSchemaName + "." +
+                               table_name);
               executeQueryMariaDB(mariadbConn.get(),
                                   "TRUNCATE TABLE `" + lowerSchemaName + "`.`" +
                                       table_name + "`;");
+              Logger::debug("transferDataPostgresToMariaDB",
+                            "Table truncated successfully");
             }
           } else if (table.status == "RESET") {
+            Logger::info("transferDataPostgresToMariaDB",
+                         "Processing RESET table: " + schema_name + "." +
+                             table_name);
             // Para RESET, solo truncamos la tabla si existe, no la eliminamos
             // porque ya fue creada en setupTableTargetPostgresToMariaDB
             executeQueryMariaDB(mariadbConn.get(), "TRUNCATE TABLE `" +
@@ -748,17 +780,18 @@ public:
 
               std::ofstream file(tempFile);
               if (!file.is_open()) {
-                std::cerr << "ERROR: Failed to create temp file: " << tempFile
-                          << std::endl;
+                Logger::error("transferDataPostgresToMariaDB",
+                              "Failed to create temp file: " + tempFile);
                 continue;
               }
               // std::cerr << "Temp file created successfully" << std::endl;
 
               for (const auto &row : results) {
                 if (row.size() != columnNames.size()) {
-                  std::cerr << "WARNING: Row size mismatch. Expected: "
-                            << columnNames.size() << ", Got: " << row.size()
-                            << std::endl;
+                  Logger::warning("transferDataPostgresToMariaDB",
+                                  "Row size mismatch. Expected: " +
+                                      std::to_string(columnNames.size()) +
+                                      ", Got: " + std::to_string(row.size()));
                   continue;
                 }
 
@@ -890,8 +923,9 @@ public:
                 //           << std::endl;
                 checkFile.close();
               } else {
-                std::cerr << "ERROR: Temp file does not exist or cannot be read"
-                          << std::endl;
+                Logger::error("transferDataPostgresToMariaDB",
+                              "Temp file does not exist or cannot be read: " +
+                                  tempFile);
               }
 
               if (rowsInserted > 0) {
@@ -899,9 +933,10 @@ public:
                 // DATA INFILE
                 std::ifstream finalCheck(tempFile);
                 if (!finalCheck.good()) {
-                  std::cerr << "ERROR: Temp file disappeared before LOAD DATA "
-                               "INFILE: "
-                            << tempFile << std::endl;
+                  Logger::error(
+                      "transferDataPostgresToMariaDB",
+                      "Temp file disappeared before LOAD DATA INFILE: " +
+                          tempFile);
                   continue;
                 }
                 finalCheck.close();
@@ -951,8 +986,8 @@ public:
                   // std::cerr << "Temp file cleaned up successfully" <<
                   // std::endl;
                 } else {
-                  std::cerr << "WARNING: Failed to clean up temp file"
-                            << std::endl;
+                  Logger::warning("transferDataPostgresToMariaDB",
+                                  "Failed to clean up temp file: " + tempFile);
                 }
               } else {
                 // std::cerr << "No rows to insert, skipping LOAD DATA INFILE"
@@ -960,7 +995,8 @@ public:
               }
 
             } catch (const std::exception &e) {
-              std::cerr << "Error processing data: " << e.what() << std::endl;
+              Logger::error("transferDataPostgresToMariaDB",
+                            "Error processing data: " + std::string(e.what()));
             }
 
             // Obtener el conteo real de registros en MariaDB después de la
@@ -1023,8 +1059,9 @@ public:
             }
           }
         } catch (const std::exception &e) {
-          std::cerr << "Error processing table " << schema_name << "."
-                    << table_name << ": " << e.what() << std::endl;
+          Logger::error("transferDataPostgresToMariaDB",
+                        "Error processing table " + schema_name + "." +
+                            table_name + ": " + std::string(e.what()));
         }
 
         // Limpiar tabla actualmente procesando cuando termine
@@ -1033,8 +1070,9 @@ public:
         SyncReporter::currentProcessingTable = "";
       }
     } catch (const std::exception &e) {
-      std::cerr << "Error in transferDataPostgresToMariaDB: " << e.what()
-                << std::endl;
+      Logger::error("transferDataPostgresToMariaDB",
+                    "Error in transferDataPostgresToMariaDB: " +
+                        std::string(e.what()));
     }
   }
 
@@ -1088,7 +1126,8 @@ public:
       txn.exec(updateQuery);
       txn.commit();
     } catch (const std::exception &e) {
-      std::cerr << "Error updating status: " << e.what() << std::endl;
+      Logger::error("updateStatus",
+                    "Error updating status: " + std::string(e.what()));
     }
   }
 
@@ -1110,11 +1149,13 @@ private:
       if (conn->is_open()) {
         return conn;
       } else {
-        std::cerr << "Failed to open PostgreSQL connection" << std::endl;
+        Logger::error("connectPostgres",
+                      "Failed to open PostgreSQL connection");
         return nullptr;
       }
     } catch (const std::exception &e) {
-      std::cerr << "Connection failed: " << e.what() << std::endl;
+      Logger::error("connectPostgres",
+                    "Connection failed: " + std::string(e.what()));
       return nullptr;
     }
   }
@@ -1144,7 +1185,7 @@ private:
 
     MYSQL *conn = mysql_init(nullptr);
     if (!conn) {
-      std::cerr << "mysql_init() failed\n";
+      Logger::error("connectMariaDB", "mysql_init() failed");
       return std::unique_ptr<MYSQL, void (*)(MYSQL *)>(nullptr, mysql_close);
     }
 
@@ -1159,9 +1200,12 @@ private:
 
     if (mysql_real_connect(conn, host.c_str(), user.c_str(), password.c_str(),
                            db.c_str(), portNum, nullptr, 0) != nullptr) {
+      Logger::debug("connectMariaDB",
+                    "MariaDB connection established successfully");
       return std::unique_ptr<MYSQL, void (*)(MYSQL *)>(conn, mysql_close);
     } else {
-      std::cerr << "Connection Failed: " << mysql_error(conn) << std::endl;
+      Logger::error("connectMariaDB",
+                    "Connection Failed: " + std::string(mysql_error(conn)));
       mysql_close(conn);
       return std::unique_ptr<MYSQL, void (*)(MYSQL *)>(nullptr, mysql_close);
     }
@@ -1171,20 +1215,22 @@ private:
   executeQueryMariaDB(MYSQL *conn, const std::string &query) {
     std::vector<std::vector<std::string>> results;
     if (!conn) {
-      std::cerr << "No valid MariaDB connection" << std::endl;
+      Logger::error("executeQueryMariaDB", "No valid MariaDB connection");
       return results;
     }
 
     if (mysql_query(conn, query.c_str())) {
-      std::cerr << "Query execution failed: " << mysql_error(conn) << std::endl;
+      Logger::error("executeQueryMariaDB", "Query execution failed: " +
+                                               std::string(mysql_error(conn)));
       return results;
     }
 
     MYSQL_RES *res = mysql_store_result(conn);
     if (!res) {
       if (mysql_field_count(conn) > 0) {
-        std::cerr << "mysql_store_result() failed: " << mysql_error(conn)
-                  << std::endl;
+        Logger::error("executeQueryMariaDB",
+                      "mysql_store_result() failed: " +
+                          std::string(mysql_error(conn)));
       }
       return results;
     }
