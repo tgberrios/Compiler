@@ -1,2 +1,3 @@
 CREATE UNIQUE INDEX basic_types_pkey ON dbo.basic_types USING btree (id)
 CREATE UNIQUE INDEX basic_types_pkey ON dbo.basic_types USING btree (id)
+CREATE UNIQUE INDEX basic_types_pkey ON dbo.basic_types USING btree (id)
