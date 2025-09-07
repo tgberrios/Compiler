@@ -395,24 +395,23 @@ void DataGovernance::classifyTable(TableMetadata &metadata) {
 }
 
 void DataGovernance::inferSourceEngine(TableMetadata &metadata) {
-  std::string schema = metadata.schema_name;
-  std::string table = metadata.table_name;
+  try {
+    pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
+    pqxx::work txn(conn);
 
-  std::transform(schema.begin(), schema.end(), schema.begin(), ::tolower);
-  std::transform(table.begin(), table.end(), table.begin(), ::tolower);
+    std::string query =
+        "SELECT db_engine FROM metadata.catalog WHERE schema_name = '" +
+        escapeSQL(metadata.schema_name) + "' LIMIT 1;";
 
-  if (schema.find("mariadb") != std::string::npos ||
-      schema.find("mysql") != std::string::npos) {
-    metadata.inferred_source_engine = "MariaDB";
-  } else if (schema.find("mssql") != std::string::npos ||
-             schema.find("sqlserver") != std::string::npos) {
-    metadata.inferred_source_engine = "MSSQL";
-  } else if (schema.find("mongo") != std::string::npos) {
-    metadata.inferred_source_engine = "MongoDB";
-  } else if (schema.find("postgres") != std::string::npos ||
-             schema.find("pg") != std::string::npos) {
-    metadata.inferred_source_engine = "PostgreSQL";
-  } else {
+    auto result = txn.exec(query);
+    txn.commit();
+
+    if (!result.empty()) {
+      metadata.inferred_source_engine = result[0][0].as<std::string>();
+    } else {
+      metadata.inferred_source_engine = "UNKNOWN";
+    }
+  } catch (const std::exception &e) {
     metadata.inferred_source_engine = "UNKNOWN";
   }
 }
