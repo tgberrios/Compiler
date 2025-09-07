@@ -1,5 +1,6 @@
 #include "DDLExporter.h"
 #include "DataGovernance.h"
+#include "MetricsCollector.h"
 #include "StreamingData.h"
 #include <chrono>
 #include <iostream>
@@ -7,8 +8,8 @@
 
 int main() {
   Logger::initialize();
-  Logger::info("main",
-               "Starting DataSync system with Data Governance and DDL Export");
+  Logger::info("main", "Starting DataSync system with Data Governance, DDL "
+                       "Export and Metrics Collection");
 
   DataGovernance dg;
   dg.initialize();
@@ -17,6 +18,9 @@ int main() {
 
   DDLExporter ddlExporter;
   ddlExporter.exportAllDDL();
+
+  MetricsCollector metricsCollector;
+  metricsCollector.collectAllMetrics();
 
   StreamingData sd;
   sd.run();

@@ -1,1 +1,2 @@
 CREATE UNIQUE INDEX customers_pkey ON dbo.customers USING btree (id)
+CREATE UNIQUE INDEX customers_pkey ON dbo.customers USING btree (id)

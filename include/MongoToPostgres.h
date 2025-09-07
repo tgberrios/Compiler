@@ -283,13 +283,12 @@ private:
         std::string lowerSchemaName = toLowerCase(schemaName);
         txn.exec("TRUNCATE TABLE \"" + lowerSchemaName + "\".\"" + tableName +
                  "\" CASCADE;");
-        txn.exec(
-            "UPDATE metadata.catalog SET last_offset='0' WHERE schema_name='" +
-            escapeSQL(schemaName) + "' AND table_name='" +
-            escapeSQL(tableName) + "';");
         txn.commit();
       }
       updateStatus(pgConn, schemaName, tableName, "FULL_LOAD", 0);
+      Logger::info("processTable",
+                   "Table " + schemaName + "." + tableName +
+                       " reset completed, status changed to FULL_LOAD");
       return;
     }
 
