@@ -20,7 +20,7 @@ link_directories(
     /opt/microsoft/msodbcsql/lib64
 )
 
-add_executable(DataSync src/main.cpp src/Config.cpp src/logger.cpp)
+add_executable(DataSync src/main.cpp src/Config.cpp src/logger.cpp src/DataGovernance.cpp)
 
 # Configurar para que el ejecutable se genere en el directorio raíz
 set_target_properties(DataSync PROPERTIES
