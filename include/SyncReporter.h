@@ -160,7 +160,7 @@ public:
                  "══════════════════╝\n\n";
 
     // Main Status Section
-    std::cout << "📊 SYNCHRONIZATION STATUS\n";
+    std::cout << "■ SYNCHRONIZATION STATUS\n";
     std::cout << "├─ Progress: ";
     for (int i = 0; i < 30; ++i) {
       if (i < progressBars) {
@@ -181,14 +181,14 @@ public:
 
     // Current Processing
     if (!currentProcessingTable.empty()) {
-      std::cout << "├─ ▶ Currently Processing: " << currentProcessingTable
+      std::cout << "├─ ► Currently Processing: " << currentProcessingTable
                 << "\n";
     } else if (!lastProcessingTable.empty()) {
       std::cout << "├─ • Last Processed: " << lastProcessingTable << "\n";
     }
 
     // Performance Metrics Section
-    std::cout << "\n⚡ PERFORMANCE METRICS\n";
+    std::cout << "\n▲ PERFORMANCE METRICS\n";
     std::cout << "├─ Transfer Rate: " << std::fixed << std::setprecision(2)
               << stats.avgTransferRate << " records/sec\n";
     std::cout << "├─ Records Transferred: "
@@ -205,17 +205,16 @@ public:
     std::cout << "└─ Sync Interval: " << SyncConfig::getSyncInterval() << "s\n";
 
     // Database Health Section
-    std::cout << "\n🗄️  DATABASE HEALTH\n";
+    std::cout << "\n■ DATABASE HEALTH\n";
     std::cout << "├─ Active Connections: " << stats.activeConnections << "/"
               << stats.totalConnections << "\n";
     std::cout << "├─ Response Time: " << formatDuration(stats.dbResponseTime)
               << "\n";
     std::cout << "└─ Status: "
-              << (stats.dbResponseTime < 100 ? "✅ Healthy" : "⚠️  Slow")
-              << "\n";
+              << (stats.dbResponseTime < 100 ? "✓ Healthy" : "⚠ Slow") << "\n";
 
     // System Resources Section
-    std::cout << "\n💻 SYSTEM RESOURCES\n";
+    std::cout << "\n● SYSTEM RESOURCES\n";
     std::cout << "├─ CPU Usage: " << std::fixed << std::setprecision(1)
               << stats.cpuUsage << "%\n";
     std::cout << "├─ Memory Usage: " << std::fixed << std::setprecision(1)
@@ -224,7 +223,7 @@ public:
               << stats.diskUsage << "%\n";
 
     // Recent Activity Section
-    std::cout << "\n📈 RECENT ACTIVITY (Last Hour)\n";
+    std::cout << "\n▲ RECENT ACTIVITY (Last Hour)\n";
     std::cout << "├─ Transfers: " << stats.transfersLastHour << "\n";
     std::cout << "├─ Errors: " << stats.errorsLastHour << "\n";
     if (!stats.lastError.empty()) {
@@ -234,8 +233,7 @@ public:
     std::cout << "└─ Uptime: " << stats.uptime << "\n";
 
     // Footer
-    std::cout << "\n🕐 " << getCurrentTimestamp()
-              << " | Press Ctrl+C to exit\n";
+    std::cout << "\n◄ " << getCurrentTimestamp() << " | Press Ctrl+C to exit\n";
   }
 
   void generateFullReport(pqxx::connection &pgConn) {
