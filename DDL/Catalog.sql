@@ -1,5 +1,4 @@
--- auto-generated definition
-create table catalog
+create table metadata.catalog
 (
     schema_name       varchar not null,
     table_name        varchar not null,
@@ -12,12 +11,9 @@ create table catalog
     last_offset       integer default 0,
     cluster_name      varchar,
     constraint catalog_new_pkey
-        primary key ()
+        primary key (schema_name, table_name, db_engine)
 );
 
-alter table catalog
+alter table metadata.catalog
     owner to "tomy.berrios";
-
-create unique index catalog_new_pkey
-    on catalog (schema_name, table_name, db_engine);
 
