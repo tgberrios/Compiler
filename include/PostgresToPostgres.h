@@ -73,8 +73,8 @@ public:
 
   void transferDataPostgresToPostgres() {
     try {
-      Logger::debug("transferDataPostgresToPostgres",
-                    "Starting PostgreSQL to PostgreSQL transfer");
+      //Logger::debug("transferDataPostgresToPostgres",
+      //              "Starting PostgreSQL to PostgreSQL transfer");
       pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
 
       {

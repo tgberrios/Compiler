@@ -5,7 +5,7 @@
 #include <sstream>
 
 void MetricsCollector::collectAllMetrics() {
-  Logger::info("MetricsCollector", "Starting comprehensive metrics collection");
+  //Logger::info("MetricsCollector", "Starting comprehensive metrics collection");
 
   try {
     createMetricsTable();
@@ -475,9 +475,9 @@ MetricsCollector::calculateBytesTransferred(const std::string &schema_name,
     pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
     pqxx::work txn(conn);
 
-    std::string sizeQuery = "SELECT pg_total_relation_size('" +
-                            escapeSQL(schema_name) + ".\"" +
-                            escapeSQL(table_name) + "\"') as size_bytes;";
+    std::string sizeQuery = "SELECT COALESCE(pg_total_relation_size(to_regclass('\"" +
+                            escapeSQL(schema_name) + "\".\"" +
+                            escapeSQL(table_name) + "\"')), 0) as size_bytes;";
 
     auto result = txn.exec(sizeQuery);
     txn.commit();

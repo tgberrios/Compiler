@@ -259,9 +259,9 @@ public:
 
         // Guardar columna de tiempo detectada en metadata.catalog
         if (!detectedTimeColumn.empty()) {
-          Logger::debug("setupTableTargetMariaDBToPostgres",
-                        "Saving detected time column '" + detectedTimeColumn +
-                            "' to metadata.catalog");
+          //Logger::debug("setupTableTargetMariaDBToPostgres",
+          //              "Saving detected time column '" + detectedTimeColumn +
+          //                      "' to metadata.catalog");
           pqxx::work txn(pgConn);
           txn.exec("UPDATE metadata.catalog SET last_sync_column='" +
                    escapeSQL(detectedTimeColumn) + "' WHERE schema_name='" +
@@ -533,11 +533,9 @@ public:
           }
         }
 
-        // Transferir datos faltantes usando OFFSET
-        // std::cerr << "Starting data transfer loop..." << std::endl;
         bool hasMoreData = true;
         while (hasMoreData) {
-          const size_t CHUNK_SIZE = SyncConfig::getChunkSize();
+          const size_t CHUNK_SIZE = std::min(SyncConfig::getChunkSize(), static_cast<size_t>(10000));
           // std::cerr << "Building select query..." << std::endl;
           std::string selectQuery =
               "SELECT * FROM `" + schema_name + "`.`" + table_name + "`";
@@ -581,11 +579,13 @@ public:
           selectQuery += " LIMIT " + std::to_string(CHUNK_SIZE) + " OFFSET " +
                          std::to_string(targetCount) + ";";
 
-          // std::cerr << "Executing select query: " << selectQuery <<
-          // std::endl;
           auto results = executeQueryMariaDB(mariadbConn.get(), selectQuery);
-          // std::cerr << "Query executed, got " << results.size() << " rows" <<
-          // std::endl;
+          
+          if (results.size() > 0) {
+            Logger::info("transferDataMariaDBToPostgres",
+                        "Processing chunk of " + std::to_string(results.size()) + 
+                        " rows for " + schema_name + "." + table_name);
+          }
 
           if (results.empty()) {
             // std::cerr << "No more data, ending transfer loop" << std::endl;
@@ -634,129 +634,139 @@ public:
             }
 
             if (rowsInserted > 0) {
-              // std::cerr << "Inserting " << rowsInserted << " rows using
-              // COPY..." << std::endl;
               try {
                 pqxx::work txn(pgConn);
+                txn.exec("SET statement_timeout = '300s'");
                 std::string tableName =
                     "\"" + lowerSchemaName + "\".\"" + table_name + "\"";
-                // std::cerr << "Using COPY to table: " << tableName <<
-                // std::endl;
                 pqxx::stream_to stream(txn, tableName);
 
-                for (const auto &row : results) {
-                  if (row.size() == columnNames.size()) {
-                    std::vector<std::optional<std::string>> values;
-                    for (size_t i = 0; i < row.size(); ++i) {
-                      if (row[i] == "NULL" || row[i].empty()) {
-                        // Para columnas que podrían ser NOT NULL, usar valores
-                        // por defecto apropiados
-                        std::string defaultValue = "NO_DATA";
-                        std::string columnType = columnTypes[i];
-                        std::transform(columnType.begin(), columnType.end(),
-                                       columnType.begin(), ::toupper);
+                try {
+                  for (const auto &row : results) {
+                    if (row.size() == columnNames.size()) {
+                      std::vector<std::optional<std::string>> values;
+                      for (size_t i = 0; i < row.size(); ++i) {
+                        if (row[i] == "NULL" || row[i].empty()) {
+                          std::string columnType = columnTypes[i];
+                          std::transform(columnType.begin(), columnType.end(),
+                                         columnType.begin(), ::toupper);
 
-                        if (columnType.find("TIMESTAMP") != std::string::npos ||
-                            columnType.find("DATETIME") != std::string::npos) {
-                          defaultValue = "1970-01-01 00:00:00";
-                        } else if (columnType.find("DATE") !=
-                                   std::string::npos) {
-                          defaultValue = "1970-01-01";
-                        } else if (columnType.find("TIME") !=
-                                   std::string::npos) {
-                          defaultValue = "00:00:00";
-                        } else if (columnType.find("INT") !=
-                                       std::string::npos ||
-                                   columnType.find("BIGINT") !=
-                                       std::string::npos ||
-                                   columnType.find("SMALLINT") !=
-                                       std::string::npos ||
-                                   columnType.find("TINYINT") !=
-                                       std::string::npos) {
-                          defaultValue = "0";
-                        } else if (columnType.find("DECIMAL") !=
-                                       std::string::npos ||
-                                   columnType.find("NUMERIC") !=
-                                       std::string::npos ||
-                                   columnType.find("FLOAT") !=
-                                       std::string::npos ||
-                                   columnType.find("DOUBLE") !=
-                                       std::string::npos) {
-                          defaultValue = "0.0";
-                        } else if (columnType.find("BOOLEAN") !=
-                                       std::string::npos ||
-                                   columnType.find("BOOL") !=
-                                       std::string::npos) {
-                          defaultValue = "false";
-                        }
+                          if (columnType.find("TIMESTAMP") != std::string::npos ||
+                              columnType.find("DATETIME") != std::string::npos) {
+                            values.push_back("1970-01-01 00:00:00");
+                          } else if (columnType.find("DATE") != std::string::npos) {
+                            values.push_back("1970-01-01");
+                          } else if (columnType.find("TIME") != std::string::npos) {
+                            values.push_back("00:00:00");
+                          } else if (columnType.find("INT") != std::string::npos ||
+                                     columnType.find("BIGINT") != std::string::npos ||
+                                     columnType.find("SMALLINT") != std::string::npos ||
+                                     columnType.find("TINYINT") != std::string::npos) {
+                            values.push_back("0");
+                          } else if (columnType.find("DECIMAL") != std::string::npos ||
+                                     columnType.find("NUMERIC") != std::string::npos ||
+                                     columnType.find("FLOAT") != std::string::npos ||
+                                     columnType.find("DOUBLE") != std::string::npos) {
+                            values.push_back("0.0");
+                          } else if (columnType.find("BOOLEAN") != std::string::npos ||
+                                     columnType.find("BOOL") != std::string::npos) {
+                            values.push_back("false");
+                          } else if (columnType.find("BIT") != std::string::npos) {
+                            values.push_back(std::nullopt);
+                          } else {
+                            values.push_back(std::nullopt);
+                          }
+                        } else {
+                          std::string cleanValue = row[i];
+                          std::string columnType = columnTypes[i];
+                          std::transform(columnType.begin(), columnType.end(),
+                                         columnType.begin(), ::toupper);
 
-                        // DEBUG
-                        // std::cerr << "NULL value for column '" <<
-                        // columnNames[i]
-                        //<< "' (type: " << columnTypes[i] << " -> " <<
-                        // columnType
-                        //<< ") -> using default: '" << defaultValue << "'" <<
-                        // std::endl;
-                        values.push_back(defaultValue);
-                      } else {
-
-                        std::string cleanValue = row[i];
-
-                        // Transformar fechas inválidas de MariaDB a fechas
-                        // válidas para PostgreSQL
-                        if (columnTypes[i].find("TIMESTAMP") !=
-                                std::string::npos ||
-                            columnTypes[i].find("DATETIME") !=
-                                std::string::npos ||
-                            columnTypes[i].find("DATE") != std::string::npos) {
-                          if (cleanValue == "0000-00-00 00:00:00" ||
-                              cleanValue == "0000-00-00") {
-                            cleanValue = "1970-01-01 00:00:00";
-                          } else if (cleanValue.find("0000-00-00") !=
-                                     std::string::npos) {
-                            cleanValue = "1970-01-01 00:00:00";
-                          } else if (cleanValue.find("-00 00:00:00") !=
-                                     std::string::npos) {
-                            // Transformar fechas con día 00: "1989-09-00
-                            // 00:00:00" -> "1989-09-01 00:00:00"
-                            size_t pos = cleanValue.find("-00 00:00:00");
-                            if (pos != std::string::npos) {
-                              cleanValue.replace(pos, 3, "-01");
+                          if (cleanValue.empty()) {
+                            if (columnType.find("BIT") != std::string::npos) {
+                              values.push_back(std::nullopt);
+                            } else {
+                              values.push_back(std::nullopt);
                             }
-                          } else if (cleanValue.find("-00") !=
-                                     std::string::npos) {
-                            // Transformar fechas con día 00 sin hora:
-                            // "1989-09-00" -> "1989-09-01"
-                            size_t pos = cleanValue.find("-00");
-                            if (pos != std::string::npos) {
-                              cleanValue.replace(pos, 3, "-01");
+                            continue;
+                          }
+
+                          if (columnType.find("BOOLEAN") != std::string::npos ||
+                              columnType.find("BOOL") != std::string::npos) {
+                            if (cleanValue == "N" || cleanValue == "0" || 
+                                cleanValue == "false" || cleanValue == "FALSE") {
+                              cleanValue = "false";
+                            } else if (cleanValue == "Y" || cleanValue == "1" || 
+                                       cleanValue == "true" || cleanValue == "TRUE") {
+                              cleanValue = "true";
+                            }
+                          } else if (columnType.find("BIT") != std::string::npos) {
+                            if (cleanValue == "0" || cleanValue == "false" || 
+                                cleanValue == "FALSE" || cleanValue.empty()) {
+                              values.push_back(std::nullopt);
+                              continue;
+                            } else if (cleanValue == "1" || cleanValue == "true" || 
+                                       cleanValue == "TRUE") {
+                              cleanValue = "1";
+                            } else {
+                              values.push_back(std::nullopt);
+                              continue;
                             }
                           }
-                        }
 
-                        for (char &c : cleanValue) {
-                          if (static_cast<unsigned char>(c) > 127) {
-                            c = '?';
+                          if (columnType.find("TIMESTAMP") != std::string::npos ||
+                              columnType.find("DATETIME") != std::string::npos ||
+                              columnType.find("DATE") != std::string::npos) {
+                            if (cleanValue == "0000-00-00 00:00:00" ||
+                                cleanValue == "0000-00-00") {
+                              cleanValue = "1970-01-01 00:00:00";
+                            } else if (cleanValue.find("0000-00-00") != std::string::npos) {
+                              cleanValue = "1970-01-01 00:00:00";
+                            } else if (cleanValue.find("-00 00:00:00") != std::string::npos) {
+                              size_t pos = cleanValue.find("-00 00:00:00");
+                              if (pos != std::string::npos) {
+                                cleanValue.replace(pos, 3, "-01");
+                              }
+                            } else if (cleanValue.find("-00") != std::string::npos) {
+                              size_t pos = cleanValue.find("-00");
+                              if (pos != std::string::npos) {
+                                cleanValue.replace(pos, 3, "-01");
+                              }
+                            }
                           }
+
+                          for (char &c : cleanValue) {
+                            if (static_cast<unsigned char>(c) > 127) {
+                              c = '?';
+                            }
+                          }
+
+                          cleanValue.erase(
+                              std::remove_if(cleanValue.begin(), cleanValue.end(),
+                                             [](unsigned char c) {
+                                               return c < 32 && c != 9 &&
+                                                      c != 10 && c != 13;
+                                             }),
+                              cleanValue.end());
+
+                          values.push_back(cleanValue);
                         }
-
-                        cleanValue.erase(
-                            std::remove_if(cleanValue.begin(), cleanValue.end(),
-                                           [](unsigned char c) {
-                                             return c < 32 && c != 9 &&
-                                                    c != 10 && c != 13;
-                                           }),
-                            cleanValue.end());
-
-                        values.push_back(cleanValue);
                       }
+                      stream << values;
                     }
-                    stream << values;
                   }
+                  stream.complete();
+                  txn.commit();
+                  Logger::info("transferDataMariaDBToPostgres",
+                              "Successfully copied " + std::to_string(rowsInserted) + 
+                              " rows to " + schema_name + "." + table_name);
+                } catch (const std::exception &e) {
+                  try {
+                    stream.complete();
+                  } catch (...) {
+                  }
+                  throw;
                 }
-                stream.complete();
-                txn.commit();
-                // std::cerr << "COPY completed successfully" << std::endl;
               } catch (const std::exception &e) {
                 Logger::error("transferDataMariaDBToPostgres",
                               "COPY failed: " + std::string(e.what()));
@@ -870,6 +880,7 @@ private:
 
   std::unique_ptr<MYSQL, void (*)(MYSQL *)>
   connectMariaDB(const std::string &connStr) {
+   // Logger::debug("connectMariaDB", "Parsing connection string: " + connStr);
     std::string host, user, password, db, port;
     std::istringstream ss(connStr);
     std::string token;
@@ -890,6 +901,8 @@ private:
       else if (key == "port")
         port = value;
     }
+    
+    //Logger::debug("connectMariaDB", "Parsed values - Host: " + host + ", User: " + user + ", DB: " + db + ", Port: " + port);
 
     MYSQL *conn = mysql_init(nullptr);
     if (!conn) {
@@ -908,8 +921,8 @@ private:
 
     if (mysql_real_connect(conn, host.c_str(), user.c_str(), password.c_str(),
                            db.c_str(), portNum, nullptr, 0) != nullptr) {
-      Logger::debug("connectMariaDB",
-                    "MariaDB connection established successfully");
+      //Logger::debug("connectMariaDB",
+                    //"MariaDB connection established successfully");
       return std::unique_ptr<MYSQL, void (*)(MYSQL *)>(conn, mysql_close);
     } else {
       Logger::error("connectMariaDB",

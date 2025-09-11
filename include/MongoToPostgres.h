@@ -76,8 +76,8 @@ public:
 
   void transferDataMongoToPostgres() {
     try {
-      Logger::debug("transferDataMongoToPostgres",
-                    "Starting MongoDB to PostgreSQL transfer");
+      //Logger::debug("transferDataMongoToPostgres",
+      //              "Starting MongoDB to PostgreSQL transfer");
       pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
 
       {

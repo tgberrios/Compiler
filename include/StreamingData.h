@@ -2,6 +2,9 @@
 #define STREAMINGDATA_H
 
 #include "Config.h"
+#include "DataGovernance.h"
+#include "DDLExporter.h"
+#include "MetricsCollector.h"
 #include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
 #include "MongoToPostgres.h"
@@ -22,10 +25,31 @@ public:
   StreamingData() = default;
   ~StreamingData() = default;
 
+  void initialize() {
+    //Logger::info("StreamingData", "Initializing DataSync system components");
+    
+    DataGovernance dg;
+    dg.initialize();
+    dg.runDiscovery();
+    dg.generateReport();
+    //Logger::info("StreamingData", "Data Governance initialization completed");
+
+    DDLExporter ddlExporter;
+    ddlExporter.exportAllDDL();
+    //Logger::info("StreamingData", "DDL Export completed");
+
+    MetricsCollector metricsCollector;
+    metricsCollector.collectAllMetrics();
+    Logger::info("StreamingData", "Metrics Collection completed");
+    
+    Logger::info("StreamingData", "System initialization completed");
+  }
+
   void run() {
-    Logger::initialize();
+    Logger::info("StreamingData", "Starting run() method");
     Logger::info("StreamingData", "DataSync system started");
 
+    Logger::info("StreamingData", "Creating transfer objects");
     MariaDBToPostgres mariaToPg;
     MSSQLToPostgres mssqlToPg;
     PostgresToPostgres pgToPg;
@@ -34,15 +58,27 @@ public:
     CatalogManager catalogManager;
 
     int minutes_counter = 0;
+    Logger::info("StreamingData", "Establishing PostgreSQL connection");
     pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
     Logger::info("StreamingData", "PostgreSQL connection established");
 
     Logger::info("StreamingData",
                  "Starting MariaDB -> PostgreSQL catalog synchronization");
-    catalogManager.syncCatalogMariaDBToPostgres();
+    try {
+      catalogManager.syncCatalogMariaDBToPostgres();
+      Logger::info("StreamingData", "MariaDB catalog sync completed");
+    } catch (const std::exception &e) {
+      Logger::error("StreamingData", "MariaDB catalog sync failed: " + std::string(e.what()));
+    }
+    
     Logger::info("StreamingData",
                  "Setting up target tables MariaDB -> PostgreSQL");
-    mariaToPg.setupTableTargetMariaDBToPostgres();
+    try {
+      mariaToPg.setupTableTargetMariaDBToPostgres();
+      Logger::info("StreamingData", "MariaDB target tables setup completed");
+    } catch (const std::exception &e) {
+      Logger::error("StreamingData", "MariaDB target tables setup failed: " + std::string(e.what()));
+    }
 
     Logger::info("StreamingData",
                  "Starting MSSQL -> PostgreSQL catalog synchronization");
@@ -71,23 +107,27 @@ public:
 
     // Bucle principal con transferencias secuenciales
     Logger::info("StreamingData", "Starting main monitoring loop");
+    Logger::info("StreamingData", "Entering infinite loop for data transfers");
     while (true) {
       try {
-        Logger::debug("StreamingData", "Loading configuration from database");
+        //Logger::debug("StreamingData", "Loading configuration from database");
         loadConfigFromDatabase(pgConn);
 
         // Ejecutar transferencias de forma secuencial para evitar conflictos
-        Logger::debug("StreamingData",
+        Logger::info("StreamingData",
                       "Executing MariaDB -> PostgreSQL transfer");
         try {
           mariaToPg.transferDataMariaDBToPostgres();
+          Logger::info("MariaDBToPostgres", "Transfer completed successfully");
         } catch (const std::exception &e) {
           Logger::error("MariaDBToPostgres",
                         "Transfer error: " + std::string(e.what()));
+        } catch (...) {
+          Logger::error("MariaDBToPostgres", "Unknown error during transfer");
         }
 
-        Logger::debug("StreamingData",
-                      "Executing MSSQL -> PostgreSQL transfer");
+        //Logger::debug("StreamingData",
+        //              "Executing MSSQL -> PostgreSQL transfer");
         try {
           mssqlToPg.transferDataMSSQLToPostgres();
         } catch (const std::exception &e) {
@@ -95,8 +135,8 @@ public:
                         "Transfer error: " + std::string(e.what()));
         }
 
-        Logger::debug("StreamingData",
-                      "Executing PostgreSQL -> PostgreSQL transfer");
+        //Logger::debug("StreamingData",
+        //              "Executing PostgreSQL -> PostgreSQL transfer");
         try {
           pgToPg.transferDataPostgresToPostgres();
         } catch (const std::exception &e) {
@@ -104,8 +144,8 @@ public:
                         "Transfer error: " + std::string(e.what()));
         }
 
-        Logger::debug("StreamingData",
-                      "Executing MongoDB -> PostgreSQL transfer");
+        //Logger::debug("StreamingData",
+        //              "Executing MongoDB -> PostgreSQL transfer");
         try {
           mongoToPg.transferDataMongoToPostgres();
         } catch (const std::exception &e) {
@@ -113,7 +153,7 @@ public:
                         "Transfer error: " + std::string(e.what()));
         }
 
-        Logger::debug("StreamingData", "Generating full report");
+        //Logger::debug("StreamingData", "Generating full report");
         reporter.generateFullReport(pgConn);
 
         minutes_counter += 1;
@@ -138,7 +178,7 @@ public:
               "Starting MongoDB -> PostgreSQL catalog synchronization");
           catalogManager.syncCatalogMongoToPostgres();
 
-          Logger::debug("StreamingData", "Cleaning catalog");
+          //Logger::debug("StreamingData", "Cleaning catalog");
           catalogManager.cleanCatalog();
 
           minutes_counter = 0;
