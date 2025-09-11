@@ -1,10 +1,4 @@
-BUGS:
-ARREGLAR MAIN.CPP
 
-
-1. Inmediatas (1-2 días)
-Implementar pool de conexiones básico
-Añadir validación de connection strings
 2. Corto Plazo (1-2 semanas)
 Implementar transferencias paralelas
 

@@ -8,3 +8,4 @@ CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`test_sync` (`id`);
 CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`test_sync` (`id`);
 CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`test_sync` (`id`);
 CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`test_sync` (`id`);
+CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`test_sync` (`id`);
