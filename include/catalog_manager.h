@@ -77,8 +77,8 @@ public:
       }
 
       for (const auto &connStr : mariaConnStrings) {
-        //Logger::debug("syncCatalogMariaDBToPostgres",
-        //              "Processing connection: " + connStr);
+        // Logger::debug("syncCatalogMariaDBToPostgres",
+        //               "Processing connection: " + connStr);
         {
           pqxx::work txn(pgConn);
           auto connectionCheck =
@@ -91,19 +91,19 @@ public:
 
           if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
             int connectionCount = connectionCheck[0][0].as<int>();
-            //Logger::debug("syncCatalogMariaDBToPostgres",
-            //              "Recent sync count: " +
-            //                  std::to_string(connectionCount));
+            // Logger::debug("syncCatalogMariaDBToPostgres",
+            //               "Recent sync count: " +
+            //                   std::to_string(connectionCount));
             if (connectionCount > 0) {
-              //Logger::debug("syncCatalogMariaDBToPostgres",
-              //              "Skipping due to recent sync");
+              // Logger::debug("syncCatalogMariaDBToPostgres",
+              //               "Skipping due to recent sync");
               continue;
             }
           }
         }
 
-        //Logger::debug("syncCatalogMariaDBToPostgres",
-        //              "Connecting to MariaDB: " + connStr);
+        // Logger::debug("syncCatalogMariaDBToPostgres",
+        //               "Connecting to MariaDB: " + connStr);
         auto mariaConn = connectMariaDB(connStr);
         if (!mariaConn) {
           Logger::error("syncCatalogMariaDBToPostgres",
@@ -188,8 +188,8 @@ public:
       }
 
       for (const auto &connStr : mssqlConnStrings) {
-        //Logger::debug("syncCatalogMSSQLToPostgres",
-        //              "Processing connection: " + connStr);
+        // Logger::debug("syncCatalogMSSQLToPostgres",
+        //               "Processing connection: " + connStr);
         {
           pqxx::work txn(pgConn);
           auto connectionCheck =
@@ -202,9 +202,9 @@ public:
 
           if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
             int connectionCount = connectionCheck[0][0].as<int>();
-            //Logger::debug("syncCatalogMSSQLToPostgres",
-            //              "Recent sync count: " +
-            //                  std::to_string(connectionCount));
+            // Logger::debug("syncCatalogMSSQLToPostgres",
+            //               "Recent sync count: " +
+            //                   std::to_string(connectionCount));
             if (connectionCount > 0) {
               Logger::debug("syncCatalogMSSQLToPostgres",
                             "Skipping due to recent sync");
@@ -306,8 +306,8 @@ public:
       }
 
       for (const auto &connStr : pgConnStrings) {
-        //Logger::debug("syncCatalogPostgresToPostgres",
-        //              "Processing connection: " + connStr);
+        // Logger::debug("syncCatalogPostgresToPostgres",
+        //               "Processing connection: " + connStr);
         {
           pqxx::work txn(pgConn);
           auto connectionCheck =
@@ -320,9 +320,9 @@ public:
 
           if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
             int connectionCount = connectionCheck[0][0].as<int>();
-            //Logger::debug("syncCatalogPostgresToPostgres",
-            //              "Recent sync count: " +
-            //                  std::to_string(connectionCount));
+            // Logger::debug("syncCatalogPostgresToPostgres",
+            //               "Recent sync count: " +
+            //                   std::to_string(connectionCount));
             if (connectionCount > 0) {
               Logger::debug("syncCatalogPostgresToPostgres",
                             "Skipping due to recent sync");
@@ -422,8 +422,8 @@ public:
       }
 
       for (const auto &connStr : mongoConnStrings) {
-        //Logger::debug("syncCatalogMongoToPostgres",
-        //              "Processing connection: " + connStr);
+        // Logger::debug("syncCatalogMongoToPostgres",
+        //               "Processing connection: " + connStr);
         {
           pqxx::work txn(pgConn);
           auto connectionCheck =
@@ -436,12 +436,12 @@ public:
 
           if (!connectionCheck.empty() && !connectionCheck[0][0].is_null()) {
             int connectionCount = connectionCheck[0][0].as<int>();
-            //Logger::debug("syncCatalogMongoToPostgres",
-            //              "Recent sync count: " +
-            //                  std::to_string(connectionCount));
+            // Logger::debug("syncCatalogMongoToPostgres",
+            //               "Recent sync count: " +
+            //                   std::to_string(connectionCount));
             if (connectionCount > 0) {
-              //Logger::debug("syncCatalogMongoToPostgres",
-              //              "Skipping due to recent sync");
+              // Logger::debug("syncCatalogMongoToPostgres",
+              //               "Skipping due to recent sync");
               continue;
             }
           }
@@ -451,7 +451,6 @@ public:
                       "Connecting to MongoDB: " + connStr);
 
         // Connect to MongoDB
-        mongoc_init();
         mongoc_client_t *client = mongoc_client_new(connStr.c_str());
         if (!client) {
           Logger::error("syncCatalogMongoToPostgres",
@@ -576,7 +575,8 @@ public:
                                 escapeSQL(collectionName) +
                                 "', '', 'MongoDB', '" + escapeSQL(connStr) +
                                 "', NOW(), '', 'PENDING', '0', false) "
-                                "ON CONFLICT (schema_name, table_name, db_engine) "
+                                "ON CONFLICT (schema_name, table_name, "
+                                "db_engine) "
                                 "DO UPDATE SET last_sync_time = NOW();");
                             txn.commit();
                           }
@@ -619,8 +619,8 @@ private:
 
   void cleanNonExistentPostgresTables(pqxx::connection &pgConn) {
     try {
-      //Logger::debug("cleanNonExistentPostgresTables",
-      //              "Starting PostgreSQL table cleanup");
+      // Logger::debug("cleanNonExistentPostgresTables",
+      //               "Starting PostgreSQL table cleanup");
       pqxx::work txn(pgConn);
 
       // Obtener todas las tablas marcadas como PostgreSQL (solo destinos, no
@@ -654,8 +654,8 @@ private:
       }
 
       txn.commit();
-      //Logger::debug("cleanNonExistentPostgresTables",
-      //              "PostgreSQL table cleanup completed");
+      // Logger::debug("cleanNonExistentPostgresTables",
+      //               "PostgreSQL table cleanup completed");
     } catch (const std::exception &e) {
       Logger::error("cleanNonExistentPostgresTables",
                     "Error cleaning PostgreSQL tables: " +
@@ -665,12 +665,14 @@ private:
 
   void cleanNonExistentMariaDBTables(pqxx::connection &pgConn) {
     try {
-      //Logger::debug("cleanNonExistentMariaDBTables",
-      //              "Starting MariaDB table cleanup");
+      // Logger::debug("cleanNonExistentMariaDBTables",
+      //               "Starting MariaDB table cleanup");
       pqxx::work txn(pgConn);
 
       // Obtener connection_strings únicos de MariaDB
-      auto connectionResults = txn.exec("SELECT DISTINCT connection_string FROM metadata.catalog WHERE db_engine='MariaDB';");
+      auto connectionResults =
+          txn.exec("SELECT DISTINCT connection_string FROM metadata.catalog "
+                   "WHERE db_engine='MariaDB';");
 
       for (const auto &connRow : connectionResults) {
         std::string connection_string = connRow[0].as<std::string>();
@@ -679,29 +681,41 @@ private:
         auto mariadbConn = connectMariaDB(connection_string);
         if (!mariadbConn) {
           Logger::warning("cleanNonExistentMariaDBTables",
-                          "Cannot connect to MariaDB with connection: " + connection_string);
+                          "Cannot connect to MariaDB with connection: " +
+                              connection_string);
           continue;
         }
 
         // Obtener todas las tablas para este connection_string
-        auto tableResults = txn.exec("SELECT schema_name, table_name FROM metadata.catalog WHERE db_engine='MariaDB' AND connection_string='" + escapeSQL(connection_string) + "';");
+        auto tableResults =
+            txn.exec("SELECT schema_name, table_name FROM metadata.catalog "
+                     "WHERE db_engine='MariaDB' AND connection_string='" +
+                     escapeSQL(connection_string) + "';");
 
-        if (tableResults.empty()) continue;
+        if (tableResults.empty())
+          continue;
 
-        // Construir query batch para verificar todas las tablas de esta conexión
-        std::string batchQuery = "SELECT table_schema, table_name FROM information_schema.tables WHERE ";
+        // Construir query batch para verificar todas las tablas de esta
+        // conexión
+        std::string batchQuery = "SELECT table_schema, table_name FROM "
+                                 "information_schema.tables WHERE ";
         std::string whereConditions;
-        
+
         for (size_t i = 0; i < tableResults.size(); ++i) {
-          if (i > 0) whereConditions += " OR ";
-          whereConditions += "(table_schema='" + tableResults[i][0].as<std::string>() + "' AND table_name='" + tableResults[i][1].as<std::string>() + "')";
+          if (i > 0)
+            whereConditions += " OR ";
+          whereConditions += "(table_schema='" +
+                             tableResults[i][0].as<std::string>() +
+                             "' AND table_name='" +
+                             tableResults[i][1].as<std::string>() + "')";
         }
-        
+
         batchQuery += whereConditions;
 
         // Ejecutar verificación batch
-        auto existingTables = executeQueryMariaDB(mariadbConn.get(), batchQuery);
-        
+        auto existingTables =
+            executeQueryMariaDB(mariadbConn.get(), batchQuery);
+
         // Crear set de tablas existentes para lookup rápido
         std::set<std::pair<std::string, std::string>> existingTableSet;
         for (const auto &table : existingTables) {
@@ -714,21 +728,24 @@ private:
         for (const auto &tableRow : tableResults) {
           std::string schema_name = tableRow[0].as<std::string>();
           std::string table_name = tableRow[1].as<std::string>();
-          
-          if (existingTableSet.find({schema_name, table_name}) == existingTableSet.end()) {
+
+          if (existingTableSet.find({schema_name, table_name}) ==
+              existingTableSet.end()) {
             Logger::info("cleanNonExistentMariaDBTables",
-                         "Removing non-existent MariaDB table: " + schema_name + "." + table_name);
+                         "Removing non-existent MariaDB table: " + schema_name +
+                             "." + table_name);
 
             txn.exec("DELETE FROM metadata.catalog WHERE schema_name='" +
                      schema_name + "' AND table_name='" + table_name +
-                     "' AND db_engine='MariaDB' AND connection_string='" + escapeSQL(connection_string) + "';");
+                     "' AND db_engine='MariaDB' AND connection_string='" +
+                     escapeSQL(connection_string) + "';");
           }
         }
       }
 
       txn.commit();
-      //Logger::debug("cleanNonExistentMariaDBTables",
-      //              "MariaDB table cleanup completed");
+      // Logger::debug("cleanNonExistentMariaDBTables",
+      //               "MariaDB table cleanup completed");
     } catch (const std::exception &e) {
       Logger::error("cleanNonExistentMariaDBTables",
                     "Error cleaning MariaDB tables: " + std::string(e.what()));
@@ -737,8 +754,8 @@ private:
 
   void cleanNonExistentMSSQLTables(pqxx::connection &pgConn) {
     try {
-      //Logger::debug("cleanNonExistentMSSQLTables",
-      //              "Starting MSSQL table cleanup");
+      // Logger::debug("cleanNonExistentMSSQLTables",
+      //               "Starting MSSQL table cleanup");
       pqxx::work txn(pgConn);
 
       // Obtener todas las tablas marcadas como MSSQL
@@ -779,8 +796,8 @@ private:
       }
 
       txn.commit();
-      //Logger::debug("cleanNonExistentMSSQLTables",
-      //              "MSSQL table cleanup completed");
+      // Logger::debug("cleanNonExistentMSSQLTables",
+      //               "MSSQL table cleanup completed");
     } catch (const std::exception &e) {
       Logger::error("cleanNonExistentMSSQLTables",
                     "Error cleaning MSSQL tables: " + std::string(e.what()));
@@ -789,7 +806,8 @@ private:
 
   void cleanOrphanedTables(pqxx::connection &pgConn) {
     try {
-      //Logger::debug("cleanOrphanedTables", "Starting orphaned tables cleanup");
+      // Logger::debug("cleanOrphanedTables", "Starting orphaned tables
+      // cleanup");
       pqxx::work txn(pgConn);
 
       // Limpiar tablas con connection_string vacío o inválido
@@ -805,7 +823,8 @@ private:
                "schema_name='' OR table_name IS NULL OR table_name='';");
 
       txn.commit();
-      //Logger::debug("cleanOrphanedTables", "Orphaned tables cleanup completed");
+      // Logger::debug("cleanOrphanedTables", "Orphaned tables cleanup
+      // completed");
     } catch (const std::exception &e) {
       Logger::error("cleanOrphanedTables",
                     "Error cleaning orphaned tables: " + std::string(e.what()));
@@ -852,8 +871,8 @@ private:
 
     if (mysql_real_connect(conn, host.c_str(), user.c_str(), password.c_str(),
                            db.c_str(), portNum, nullptr, 0) != nullptr) {
-      //Logger::debug("connectMariaDB",
-      //              "MariaDB connection established successfully");
+      // Logger::debug("connectMariaDB",
+      //               "MariaDB connection established successfully");
       return std::unique_ptr<MYSQL, void (*)(MYSQL *)>(conn, mysql_close);
     } else {
       Logger::error("connectMariaDB",

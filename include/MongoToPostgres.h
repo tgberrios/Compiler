@@ -76,8 +76,8 @@ public:
 
   void transferDataMongoToPostgres() {
     try {
-      //Logger::debug("transferDataMongoToPostgres",
-      //              "Starting MongoDB to PostgreSQL transfer");
+      // Logger::debug("transferDataMongoToPostgres",
+      //               "Starting MongoDB to PostgreSQL transfer");
       pqxx::connection pgConn(DatabaseConfig::getPostgresConnectionString());
 
       {
@@ -124,8 +124,6 @@ public:
 private:
   std::unique_ptr<mongoc_client_t, void (*)(mongoc_client_t *)>
   connectMongoDB(const std::string &connStr) {
-    mongoc_init();
-
     mongoc_client_t *client = mongoc_client_new(connStr.c_str());
     if (!client) {
       Logger::error("connectMongoDB", "Failed to create MongoDB client");
