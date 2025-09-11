@@ -13,4 +13,3 @@ Implementar transferencias paralelas
 Implementar encriptación de credenciales
 Añadir soporte para más motores de BD
 Crear API REST para monitoreo
-3. ANADIR VARIABLE DEBUG PARA SABER QUE TIPO DE DEBUGGING QUIERO

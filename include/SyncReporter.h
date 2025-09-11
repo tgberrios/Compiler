@@ -2,6 +2,7 @@
 #define SYNCREPORTER_H
 
 #include "Config.h"
+#include "logger.h"
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -249,6 +250,8 @@ public:
 
     printDashboard(tables, stats);
   }
+
+  void refreshDebugConfig();
 
   std::string getCurrentTimestamp() {
     auto now = std::chrono::system_clock::now();

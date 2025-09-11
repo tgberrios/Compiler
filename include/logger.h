@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <mutex>
+#include <pqxx/pqxx>
 #include <sstream>
 #include <string>
 
@@ -27,6 +28,13 @@ private:
   static const size_t MAX_MESSAGES_BEFORE_FLUSH = 100;
   static const size_t MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
   static const int MAX_BACKUP_FILES = 5;
+
+  // Debug configuration
+  static LogLevel currentLogLevel;
+  static bool showTimestamps;
+  static bool showThreadId;
+  static bool showFileLine;
+  static std::mutex configMutex;
 
   static std::string getCurrentTimestamp() {
     auto now = std::chrono::system_clock::now();
@@ -99,6 +107,11 @@ private:
                        const std::string &message) {
     std::lock_guard<std::mutex> lock(logMutex);
 
+    // Check if this log level should be written
+    if (level < currentLogLevel) {
+      return;
+    }
+
     if (!logFile.is_open()) {
       logFile.open(logFileName, std::ios::app);
     }
@@ -121,18 +134,22 @@ private:
     }
   }
 
-public:
-  static void initialize(const std::string &fileName = "DataSync.log") {
-    std::lock_guard<std::mutex> lock(logMutex);
-
-    // Obtener la ruta del ejecutable y usar el directorio padre como raíz del
-    // proyecto
-    std::string executablePath = std::filesystem::current_path().string();
-    logFileName = executablePath + "/" + fileName;
-
-    logFile.open(logFileName, std::ios::app);
-    messageCount = 0;
+  static LogLevel stringToLogLevel(const std::string &levelStr) {
+    if (levelStr == "DEBUG")
+      return LogLevel::DEBUG;
+    if (levelStr == "INFO")
+      return LogLevel::INFO;
+    if (levelStr == "WARN" || levelStr == "WARNING")
+      return LogLevel::WARNING;
+    if (levelStr == "ERROR")
+      return LogLevel::ERROR;
+    if (levelStr == "FATAL" || levelStr == "CRITICAL")
+      return LogLevel::CRITICAL;
+    return LogLevel::INFO; // Default
   }
+
+public:
+  static void initialize(const std::string &fileName = "DataSync.log");
 
   static void shutdown() {
     std::lock_guard<std::mutex> lock(logMutex);
@@ -191,6 +208,13 @@ public:
                   const std::string &message) {
     writeLog(level, function, message);
   }
+
+  // Configuration management
+  static void loadDebugConfig();
+  static void setLogLevel(LogLevel level);
+  static void setLogLevel(const std::string &levelStr);
+  static LogLevel getCurrentLogLevel();
+  static void refreshConfig();
 };
 
 // Declaración de variables estáticas (definidas en logger.cpp)

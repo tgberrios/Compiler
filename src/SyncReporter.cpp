@@ -219,3 +219,5 @@ double SyncReporter::getDiskUsage() {
 // Definición de variables estáticas
 std::string SyncReporter::currentProcessingTable = "";
 std::string SyncReporter::lastProcessingTable = "";
+
+void SyncReporter::refreshDebugConfig() { Logger::refreshConfig(); }
