@@ -7,8 +7,8 @@ Implementar pool de conexiones básico
 Añadir validación de connection strings
 2. Corto Plazo (1-2 semanas)
 Implementar transferencias paralelas
-Añadir métricas de latencia en tiempo real
-Mejorar el dashboard con más información
+
+
 3. Mediano Plazo (1-2 meses)
 Implementar encriptación de credenciales
 Añadir soporte para más motores de BD

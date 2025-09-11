@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <pqxx/pqxx>
 #include <string>
@@ -30,6 +31,30 @@ public:
     size_t errorCount = 0;
     size_t totalSynchronized = 0;
     size_t totalErrors = 0;
+
+    // Performance Metrics
+    double avgTransferRate = 0.0;
+    double totalRecordsTransferred = 0;
+    double totalBytesTransferred = 0;
+    double avgLatencyMs = 0.0;
+    double maxLatencyMs = 0.0;
+    double p95LatencyMs = 0.0;
+
+    // Database Health
+    int activeConnections = 0;
+    int totalConnections = 0;
+    double dbResponseTime = 0.0;
+
+    // System Resources
+    double cpuUsage = 0.0;
+    double memoryUsage = 0.0;
+    double diskUsage = 0.0;
+
+    // Recent Activity
+    int transfersLastHour = 0;
+    int errorsLastHour = 0;
+    std::string lastError = "";
+    std::string uptime = "";
   };
 
   struct TableStatus {
@@ -126,7 +151,15 @@ public:
     int progressPercent = static_cast<int>(progress * 100.0);
     int progressBars = static_cast<int>(progress * 30.0);
 
-    std::cout << "DataSync Status:\n";
+    std::cout << "╔════════════════════════════════════════════════════════════"
+                 "══════════════════╗\n";
+    std::cout << "║                           DataSync Real-Time Dashboard     "
+                 "                 ║\n";
+    std::cout << "╚════════════════════════════════════════════════════════════"
+                 "══════════════════╝\n\n";
+
+    // Main Status Section
+    std::cout << "📊 SYNCHRONIZATION STATUS\n";
     std::cout << "├─ Progress: ";
     for (int i = 0; i < 30; ++i) {
       if (i < progressBars) {
@@ -145,7 +178,7 @@ public:
     std::cout << "├─ No Data: " << stats.noDataCount << "\n";
     std::cout << "├─ Errors: " << stats.errorCount << "\n";
 
-    // Mostrar tabla actualmente procesando
+    // Current Processing
     if (!currentProcessingTable.empty()) {
       std::cout << "├─ ▶ Currently Processing: " << currentProcessingTable
                 << "\n";
@@ -153,16 +186,67 @@ public:
       std::cout << "├─ • Last Processed: " << lastProcessingTable << "\n";
     }
 
-    std::cout << "├─ Processing Rate: " << calculateProcessingRate() << "\n";
-    std::cout << "├─ Latency: " << calculateLatency() << "\n";
+    // Performance Metrics Section
+    std::cout << "\n⚡ PERFORMANCE METRICS\n";
+    std::cout << "├─ Transfer Rate: " << std::fixed << std::setprecision(2)
+              << stats.avgTransferRate << " records/sec\n";
+    std::cout << "├─ Records Transferred: "
+              << formatBytes(stats.totalRecordsTransferred) << "\n";
+    std::cout << "├─ Data Transferred: "
+              << formatBytes(stats.totalBytesTransferred) << "\n";
+    std::cout << "├─ Avg Latency: " << formatDuration(stats.avgLatencyMs)
+              << "\n";
+    std::cout << "├─ Max Latency: " << formatDuration(stats.maxLatencyMs)
+              << "\n";
+    std::cout << "├─ P95 Latency: " << formatDuration(stats.p95LatencyMs)
+              << "\n";
     std::cout << "├─ Chunk Size: " << SyncConfig::getChunkSize() << "\n";
-    std::cout << "├─ Interval: " << SyncConfig::getSyncInterval() << "s\n";
-    std::cout << "└─ Time: " << getCurrentTimestamp() << std::endl;
+    std::cout << "└─ Sync Interval: " << SyncConfig::getSyncInterval() << "s\n";
+
+    // Database Health Section
+    std::cout << "\n🗄️  DATABASE HEALTH\n";
+    std::cout << "├─ Active Connections: " << stats.activeConnections << "/"
+              << stats.totalConnections << "\n";
+    std::cout << "├─ Response Time: " << formatDuration(stats.dbResponseTime)
+              << "\n";
+    std::cout << "└─ Status: "
+              << (stats.dbResponseTime < 100 ? "✅ Healthy" : "⚠️  Slow")
+              << "\n";
+
+    // System Resources Section
+    std::cout << "\n💻 SYSTEM RESOURCES\n";
+    std::cout << "├─ CPU Usage: " << std::fixed << std::setprecision(1)
+              << stats.cpuUsage << "%\n";
+    std::cout << "├─ Memory Usage: " << std::fixed << std::setprecision(1)
+              << stats.memoryUsage << "%\n";
+    std::cout << "└─ Disk Usage: " << std::fixed << std::setprecision(1)
+              << stats.diskUsage << "%\n";
+
+    // Recent Activity Section
+    std::cout << "\n📈 RECENT ACTIVITY (Last Hour)\n";
+    std::cout << "├─ Transfers: " << stats.transfersLastHour << "\n";
+    std::cout << "├─ Errors: " << stats.errorsLastHour << "\n";
+    if (!stats.lastError.empty()) {
+      std::cout << "├─ Last Error: " << stats.lastError.substr(0, 50)
+                << "...\n";
+    }
+    std::cout << "└─ Uptime: " << stats.uptime << "\n";
+
+    // Footer
+    std::cout << "\n🕐 " << getCurrentTimestamp()
+              << " | Press Ctrl+C to exit\n";
   }
 
   void generateFullReport(pqxx::connection &pgConn) {
     auto tables = getAllTableStatuses(pgConn);
     auto stats = calculateSyncStats(tables);
+
+    // Collect additional metrics
+    collectPerformanceMetrics(pgConn, stats);
+    collectDatabaseHealthMetrics(pgConn, stats);
+    collectSystemResourceMetrics(stats);
+    collectRecentActivityMetrics(pgConn, stats);
+
     printDashboard(tables, stats);
   }
 
@@ -181,10 +265,20 @@ public:
   }
 
   std::string calculateLatency() { return "~1ms"; }
+
+  // New metric collection functions
+  void collectPerformanceMetrics(pqxx::connection &pgConn, SyncStats &stats);
+  void collectDatabaseHealthMetrics(pqxx::connection &pgConn, SyncStats &stats);
+  void collectSystemResourceMetrics(SyncStats &stats);
+  void collectRecentActivityMetrics(pqxx::connection &pgConn, SyncStats &stats);
+  std::string formatBytes(double bytes);
+  std::string formatDuration(double milliseconds);
+  std::string getUptime();
+  double getCpuUsage();
+  double getMemoryUsage();
+  double getDiskUsage();
 };
 
-// Definición de variables estáticas
-std::string SyncReporter::currentProcessingTable = "";
-std::string SyncReporter::lastProcessingTable = "";
+// Declaración de variables estáticas (definidas en .cpp)
 
 #endif // SYNCREPORTER_H
