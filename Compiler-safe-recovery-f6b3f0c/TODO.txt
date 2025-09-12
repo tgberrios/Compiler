@@ -1,0 +1,4 @@
+implementar retry y cierre de conexiones fallidas para la PG
+Implementar encriptación de credenciales
+Añadir soporte para más motores de BD
+Crear API REST para monitoreo
