@@ -1,6 +1,6 @@
 -- Table DDL for dbo.customers
 -- Engine: PostgreSQL
 -- Database: dbo
--- Generated: 1757692346
+-- Generated: 1757696179
 
 CREATE TABLE "dbo"."customers" (id integer NOT NULL, name character varying(100), email character varying(100), created_at timestamp without time zone);
