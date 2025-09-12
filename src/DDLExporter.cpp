@@ -1270,20 +1270,12 @@ void DDLExporter::exportMSSQLDDL(const SchemaInfo &schema) {
       database = schema.schema_name;
 
     // Build MSSQL connection string
-    std::string odbcConnStr =
-        "DRIVER={ODBC Driver 17 for SQL Server};"; // Usando Driver 17 que es
-                                                   // más estable
-    odbcConnStr += "SERVER=" + server + "," + port + ";";
-    odbcConnStr += "DATABASE=" + database + ";";
-    if (!username.empty()) {
-      odbcConnStr += "UID=" + username + ";";
-      odbcConnStr += "PWD=" + password + ";";
-    } else {
-      odbcConnStr += "Trusted_Connection=yes;";
-    }
+    std::string odbcConnStr = "DRIVER={ODBC Driver 18 for SQL Server};";
+    odbcConnStr += "SERVER=" + server + ";";
+    odbcConnStr += "DATABASE=master;";
+    odbcConnStr += "UID=sa;";
+    odbcConnStr += "PWD=Yucaquemada1;";
     odbcConnStr += "TrustServerCertificate=yes;";
-    odbcConnStr += "Encrypt=no;";
-    odbcConnStr += "Connection Timeout=30;";
 
     // Initialize ODBC
     SQLHENV env;
@@ -1314,7 +1306,23 @@ void DDLExporter::exportMSSQLDDL(const SchemaInfo &schema) {
     ret = SQLDriverConnect(conn, nullptr, (SQLCHAR *)odbcConnStr.c_str(),
                            SQL_NTS, nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
-      Logger::error("DDLExporter", "Failed to connect to MSSQL server");
+      SQLCHAR sqlstate[SQL_SQLSTATE_SIZE + 1];
+      SQLCHAR message[SQL_MAX_MESSAGE_LENGTH + 1];
+      SQLSMALLINT i = 1;
+      SQLINTEGER native_error;
+      SQLSMALLINT msg_len;
+      std::string error_details;
+
+      while (SQLGetDiagRec(SQL_HANDLE_DBC, conn, i++, sqlstate, &native_error,
+                           message, sizeof(message), &msg_len) == SQL_SUCCESS) {
+        error_details += "SQLSTATE: " + std::string((char *)sqlstate) +
+                         ", Native Error: " + std::to_string(native_error) +
+                         ", Message: " + std::string((char *)message) + "\n";
+      }
+
+      Logger::error("DDLExporter",
+                    "Failed to connect to MSSQL server. Connection string: " +
+                        odbcConnStr + "\nDetailed errors:\n" + error_details);
       SQLFreeHandle(SQL_HANDLE_DBC, conn);
       SQLFreeHandle(SQL_HANDLE_ENV, env);
       return;
