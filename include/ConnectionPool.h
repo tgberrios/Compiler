@@ -8,10 +8,18 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <sql.h>
+#include <sqlext.h>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+// ODBC handles structure
+struct ODBCHandles {
+  SQLHENV env;
+  SQLHDBC dbc;
+};
 
 // Forward declarations for database connections
 namespace pqxx {

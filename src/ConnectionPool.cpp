@@ -7,6 +7,7 @@
 #include <pqxx/pqxx>
 #include <sql.h>
 #include <sqlext.h>
+#include <sstream>
 
 // Global pool instance
 std::unique_ptr<ConnectionPool> g_connectionPool = nullptr;
@@ -21,9 +22,26 @@ void ConnectionPool::initialize() {
   std::lock_guard<std::mutex> lock(poolMutex);
 
   Logger::info("ConnectionPool", "Initializing connection pool");
+  Logger::debug("ConnectionPool", "Loading configuration from database");
 
   // Load configuration from database
   loadConfigFromDatabase();
+
+  Logger::debug("ConnectionPool", std::string("Configuration loaded:\n") +
+                                      "  - Number of database configs: " +
+                                      std::to_string(configs.size()));
+
+  for (const auto &config : configs) {
+    Logger::debug(
+        "ConnectionPool",
+        std::string("Database config:\n") +
+            "  - Type: " + databaseTypeToString(config.type) +
+            "\n  - Min connections: " + std::to_string(config.minConnections) +
+            "\n  - Max connections: " + std::to_string(config.maxConnections) +
+            "\n  - Max idle time: " + std::to_string(config.maxIdleTime) +
+            " seconds" + "\n  - Auto reconnect: " +
+            (config.autoReconnect ? "true" : "false"));
+  }
 
   // Create initial connections
   for (const auto &config : configs) {
@@ -165,9 +183,15 @@ ConnectionPool::getConnection(DatabaseType type) {
   stats.activeConnections++;
   stats.idleConnections--;
 
-  Logger::debug("ConnectionPool", "Acquired " + databaseTypeToString(type) +
-                                      " connection (ID: " +
-                                      std::to_string(conn->connectionId) + ")");
+  Logger::debug(
+      "ConnectionPool",
+      std::string("Connection acquired - Type: ") + databaseTypeToString(type) +
+          ", ID: " + std::to_string(conn->connectionId) + "\nPool Status:" +
+          "\n  - Total connections: " + std::to_string(stats.totalConnections) +
+          "\n  - Active connections: " +
+          std::to_string(stats.activeConnections) + "\n  - Idle connections: " +
+          std::to_string(stats.idleConnections) + "\n  - Failed connections: " +
+          std::to_string(stats.failedConnections));
 
   return conn;
 }
@@ -194,13 +218,25 @@ void ConnectionPool::returnConnection(std::shared_ptr<PooledConnection> conn) {
     availableConnections.push(conn);
     stats.idleConnections++;
 
-    Logger::debug("ConnectionPool",
-                  "Returned " + databaseTypeToString(conn->type) +
-                      " connection (ID: " + std::to_string(conn->connectionId) +
-                      ")");
+    Logger::debug(
+        "ConnectionPool",
+        std::string("Connection returned - Type: ") +
+            databaseTypeToString(conn->type) +
+            ", ID: " + std::to_string(conn->connectionId) +
+            "\nPool Status:" + "\n  - Total connections: " +
+            std::to_string(stats.totalConnections) +
+            "\n  - Active connections: " +
+            std::to_string(stats.activeConnections) +
+            "\n  - Idle connections: " + std::to_string(stats.idleConnections) +
+            "\n  - Failed connections: " +
+            std::to_string(stats.failedConnections));
   } else {
-    Logger::warning("ConnectionPool",
-                    "Connection validation failed, closing connection");
+    Logger::warning(
+        "ConnectionPool",
+        std::string(
+            "Connection validation failed, closing connection - Type: ") +
+            databaseTypeToString(conn->type) +
+            ", ID: " + std::to_string(conn->connectionId));
     closeConnection(conn);
   }
 
@@ -303,18 +339,155 @@ ConnectionPool::createMongoDBConnection(const ConnectionConfig &config) {
 
 std::shared_ptr<ConnectionPool::PooledConnection>
 ConnectionPool::createMSSQLConnection(const ConnectionConfig &config) {
-  // MSSQL connection implementation would go here
-  Logger::warning("ConnectionPool",
-                  "MSSQL connection pooling not yet implemented");
-  return nullptr;
+  try {
+    // Allocate ODBC handles
+    SQLHENV env;
+    SQLHDBC dbc;
+    SQLRETURN ret;
+
+    // Allocate environment handle
+    ret = SQLAllocHandle(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env);
+    if (!SQL_SUCCEEDED(ret)) {
+      Logger::error("ConnectionPool",
+                    "Failed to allocate ODBC environment handle");
+      return nullptr;
+    }
+
+    // Set ODBC version
+    ret =
+        SQLSetEnvAttr(env, SQL_ATTR_ODBC_VERSION, (SQLPOINTER)SQL_OV_ODBC3, 0);
+    if (!SQL_SUCCEEDED(ret)) {
+      SQLFreeHandle(SQL_HANDLE_ENV, env);
+      Logger::error("ConnectionPool", "Failed to set ODBC version");
+      return nullptr;
+    }
+
+    // Allocate connection handle
+    ret = SQLAllocHandle(SQL_HANDLE_DBC, env, &dbc);
+    if (!SQL_SUCCEEDED(ret)) {
+      SQLFreeHandle(SQL_HANDLE_ENV, env);
+      Logger::error("ConnectionPool",
+                    "Failed to allocate ODBC connection handle");
+      return nullptr;
+    }
+
+    // Connect to the database
+    ret =
+        SQLDriverConnect(dbc, NULL, (SQLCHAR *)config.connectionString.c_str(),
+                         SQL_NTS, NULL, 0, NULL, SQL_DRIVER_NOPROMPT);
+
+    if (!SQL_SUCCEEDED(ret)) {
+      SQLCHAR sqlState[6], msg[SQL_MAX_MESSAGE_LENGTH];
+      SQLINTEGER nativeError;
+      SQLSMALLINT msgLen;
+      SQLGetDiagRec(SQL_HANDLE_DBC, dbc, 1, sqlState, &nativeError, msg,
+                    sizeof(msg), &msgLen);
+
+      SQLFreeHandle(SQL_HANDLE_DBC, dbc);
+      SQLFreeHandle(SQL_HANDLE_ENV, env);
+      Logger::error("ConnectionPool",
+                    "Failed to connect to MSSQL: " + std::string((char *)msg));
+      return nullptr;
+    }
+
+    // Create handles structure and wrap in shared_ptr with custom deleter
+    auto handles = new ODBCHandles{env, dbc};
+    auto pooledConn = std::make_shared<PooledConnection>();
+    pooledConn->connection = std::shared_ptr<void>(handles, [](void *p) {
+      auto h = static_cast<ODBCHandles *>(p);
+      if (h) {
+        SQLDisconnect(h->dbc);
+        SQLFreeHandle(SQL_HANDLE_DBC, h->dbc);
+        SQLFreeHandle(SQL_HANDLE_ENV, h->env);
+        delete h;
+      }
+    });
+
+    pooledConn->type = DatabaseType::MSSQL;
+    pooledConn->connectionId = nextConnectionId++;
+    pooledConn->lastUsed = std::chrono::steady_clock::now();
+
+    Logger::debug("ConnectionPool",
+                  "Created MSSQL connection (ID: " +
+                      std::to_string(pooledConn->connectionId) + ")");
+    return pooledConn;
+
+  } catch (const std::exception &e) {
+    Logger::error("ConnectionPool", "Failed to create MSSQL connection: " +
+                                        std::string(e.what()));
+    return nullptr;
+  }
 }
 
 std::shared_ptr<ConnectionPool::PooledConnection>
 ConnectionPool::createMariaDBConnection(const ConnectionConfig &config) {
-  // MariaDB connection implementation would go here
-  Logger::warning("ConnectionPool",
-                  "MariaDB connection pooling not yet implemented");
-  return nullptr;
+  try {
+    // Initialize MySQL connection
+    MYSQL *mysql = mysql_init(nullptr);
+    if (!mysql) {
+      Logger::error("ConnectionPool", "Failed to initialize MySQL connection");
+      return nullptr;
+    }
+
+    // Set connection options
+    my_bool reconnect = 1;
+    mysql_options(mysql, MYSQL_OPT_RECONNECT, &reconnect);
+
+    // Parse connection string
+    // Expected format:
+    // "host=hostname;port=3306;database=dbname;user=username;password=pwd"
+    std::string host, port, database, user, password;
+    std::istringstream ss(config.connectionString);
+    std::string token;
+    while (std::getline(ss, token, ';')) {
+      size_t pos = token.find('=');
+      if (pos != std::string::npos) {
+        std::string key = token.substr(0, pos);
+        std::string value = token.substr(pos + 1);
+        if (key == "host")
+          host = value;
+        else if (key == "port")
+          port = value;
+        else if (key == "database")
+          database = value;
+        else if (key == "user")
+          user = value;
+        else if (key == "password")
+          password = value;
+      }
+    }
+
+    // Connect to MariaDB server
+    if (!mysql_real_connect(mysql, host.c_str(), user.c_str(), password.c_str(),
+                            database.c_str(),
+                            port.empty() ? 3306 : std::stoi(port), nullptr,
+                            0)) {
+      std::string error = mysql_error(mysql);
+      mysql_close(mysql);
+      Logger::error("ConnectionPool", "Failed to connect to MariaDB: " + error);
+      return nullptr;
+    }
+
+    // Create pooled connection
+    auto pooledConn = std::make_shared<PooledConnection>();
+    pooledConn->connection = std::shared_ptr<void>(mysql, [](void *p) {
+      if (p)
+        mysql_close(static_cast<MYSQL *>(p));
+    });
+    pooledConn->type = DatabaseType::MARIADB;
+    pooledConn->connectionId = nextConnectionId++;
+    pooledConn->lastUsed = std::chrono::steady_clock::now();
+
+    Logger::debug("ConnectionPool",
+                  "Created MariaDB connection (ID: " +
+                      std::to_string(pooledConn->connectionId) + ")");
+    return pooledConn;
+
+  } catch (const std::exception &e) {
+    Logger::error("ConnectionPool", "Failed to create MariaDB connection: " +
+                                        std::string(e.what()));
+    return nullptr;
+  }
 }
 
 bool ConnectionPool::validateConnection(
@@ -337,8 +510,27 @@ bool ConnectionPool::validateConnection(
       // Simple ping to validate MongoDB connection
       return mongoc_client_get_database_names(client.get(), nullptr);
     }
+    case DatabaseType::MSSQL: {
+      auto handles = static_cast<ODBCHandles *>(conn->connection.get());
+      SQLHSTMT stmt;
+      SQLRETURN ret;
+
+      ret = SQLAllocHandle(SQL_HANDLE_STMT, handles->dbc, &stmt);
+      if (!SQL_SUCCEEDED(ret)) {
+        return false;
+      }
+
+      ret = SQLExecDirect(stmt, (SQLCHAR *)"SELECT 1", SQL_NTS);
+      SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+
+      return SQL_SUCCEEDED(ret);
+    }
+    case DatabaseType::MARIADB: {
+      auto mysql = static_cast<MYSQL *>(conn->connection.get());
+      return mysql_ping(mysql) == 0;
+    }
     default:
-      return true; // Assume valid for unimplemented types
+      return false;
     }
   } catch (const std::exception &e) {
     Logger::debug("ConnectionPool",
@@ -353,6 +545,16 @@ void ConnectionPool::cleanupIdleConnections() {
   auto now = std::chrono::steady_clock::now();
   auto maxIdleTime = std::chrono::seconds(300); // 5 minutes default
 
+  Logger::debug(
+      "ConnectionPool",
+      std::string("Starting idle connection cleanup\n") +
+          "Current Pool Status:\n" +
+          "  - Total connections: " + std::to_string(stats.totalConnections) +
+          "\n  - Active connections: " +
+          std::to_string(stats.activeConnections) + "\n  - Idle connections: " +
+          std::to_string(stats.idleConnections) + "\n  - Failed connections: " +
+          std::to_string(stats.failedConnections));
+
   // Find idle connections to close
   std::queue<std::shared_ptr<PooledConnection>> tempQueue;
   while (!availableConnections.empty()) {
@@ -360,10 +562,16 @@ void ConnectionPool::cleanupIdleConnections() {
     availableConnections.pop();
 
     if (now - conn->lastUsed > maxIdleTime && stats.totalConnections > 2) {
+      auto idleTime =
+          std::chrono::duration_cast<std::chrono::seconds>(now - conn->lastUsed)
+              .count();
       closeConnection(conn);
-      Logger::debug("ConnectionPool", "Closed idle connection (ID: " +
-                                          std::to_string(conn->connectionId) +
-                                          ")");
+      Logger::debug("ConnectionPool",
+                    std::string("Closed idle connection - Type: ") +
+                        databaseTypeToString(conn->type) +
+                        ", ID: " + std::to_string(conn->connectionId) +
+                        ", Idle time: " + std::to_string(idleTime) +
+                        " seconds");
     } else {
       tempQueue.push(conn);
     }
@@ -399,12 +607,12 @@ PoolStats ConnectionPool::getStats() const {
 
 void ConnectionPool::printPoolStatus() const {
   auto stats = getStats();
-  Logger::info(
-      "ConnectionPool",
-      "Pool Status - Total: " + std::to_string(stats.totalConnections) +
-          ", Active: " + std::to_string(stats.activeConnections) +
-          ", Idle: " + std::to_string(stats.idleConnections) +
-          ", Failed: " + std::to_string(stats.failedConnections));
+  Logger::info("ConnectionPool",
+               std::string("Pool Status - Total: ") +
+                   std::to_string(stats.totalConnections) +
+                   ", Active: " + std::to_string(stats.activeConnections) +
+                   ", Idle: " + std::to_string(stats.idleConnections) +
+                   ", Failed: " + std::to_string(stats.failedConnections));
 }
 
 std::string ConnectionPool::databaseTypeToString(DatabaseType type) {

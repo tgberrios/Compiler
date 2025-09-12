@@ -1,7 +1,7 @@
 -- Table DDL for mydatabase.usuarios
 -- Engine: MongoDB
 -- Database: mydatabase
--- Generated: 1757566797
+-- Generated: 1757690707
 
 -- MongoDB View: usuarios
 -- Schema: mydatabase
