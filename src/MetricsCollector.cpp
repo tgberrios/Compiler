@@ -41,7 +41,7 @@ void MetricsCollector::createMetricsTable() {
         "records_transferred BIGINT,"
         "bytes_transferred BIGINT,"
         "transfer_duration_ms INTEGER,"
-        "transfer_rate_per_second DECIMAL(10,2),"
+        "transfer_rate_per_second DECIMAL(15,2),"
         "chunk_size INTEGER,"
         "memory_used_mb DECIMAL(10,2),"
         "cpu_usage_percent DECIMAL(5,2),"
@@ -124,7 +124,8 @@ void MetricsCollector::collectTransferMetrics() {
       metric.schema_name = row[0].as<std::string>();
       metric.table_name = row[1].as<std::string>();
       metric.db_engine = row[2].as<std::string>();
-      metric.records_transferred = row[5].as<long long>();
+      metric.records_transferred =
+          row[5].is_null() ? 0 : row[5].as<long long>();
       metric.transfer_duration_ms =
           row[7].is_null() ? 0 : static_cast<int>(row[7].as<double>());
       metric.chunk_size = 1000; // Default chunk size

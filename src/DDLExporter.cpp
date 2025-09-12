@@ -647,60 +647,69 @@ void DDLExporter::exportPostgreSQLDDL(const SchemaInfo &schema) {
   try {
     std::string connStr = getConnectionString(schema);
     pqxx::connection conn(connStr);
-    pqxx::work txn(conn);
 
-    std::string tablesQuery =
-        "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema = '" +
-        escapeSQL(schema.schema_name) +
-        "' "
-        "AND table_type = 'BASE TABLE';";
-
-    auto tablesResult = txn.exec(tablesQuery);
-
-    for (const auto &tableRow : tablesResult) {
-      std::string tableName = tableRow[0].as<std::string>();
-
-      std::string createTableQuery =
-          "SELECT 'CREATE TABLE \"' || schemaname || '\".\"' || tablename || "
-          "'\" (' || "
-          "string_agg(column_name || ' ' || data_type || "
-          "CASE WHEN character_maximum_length IS NOT NULL THEN '(' || "
-          "character_maximum_length || ')' ELSE '' END || "
-          "CASE WHEN is_nullable = 'NO' THEN ' NOT NULL' ELSE '' END, ', ') || "
-          "');' as ddl "
-          "FROM information_schema.columns c "
-          "JOIN pg_tables pt ON c.table_name = pt.tablename AND c.table_schema "
-          "= pt.schemaname "
-          "WHERE c.table_schema = '" +
+    // Export Tables
+    {
+      pqxx::work txn(conn);
+      std::string tablesQuery =
+          "SELECT table_name FROM information_schema.tables "
+          "WHERE table_schema = '" +
           escapeSQL(schema.schema_name) +
           "' "
-          "AND c.table_name = '" +
-          escapeSQL(tableName) +
-          "' "
-          "GROUP BY schemaname, tablename;";
+          "AND table_type = 'BASE TABLE';";
 
-      auto createResult = txn.exec(createTableQuery);
+      auto tablesResult = txn.exec(tablesQuery);
+      txn.commit();
 
-      if (!createResult.empty()) {
-        std::string ddl = createResult[0][0].as<std::string>();
-        saveTableDDL(schema.db_engine, schema.database_name, schema.schema_name,
-                     tableName, ddl);
-      }
+      for (const auto &tableRow : tablesResult) {
+        std::string tableName = tableRow[0].as<std::string>();
+        pqxx::work tableTxn(conn);
 
-      std::string indexesQuery = "SELECT indexname, indexdef FROM pg_indexes "
-                                 "WHERE schemaname = '" +
-                                 escapeSQL(schema.schema_name) +
-                                 "' "
-                                 "AND tablename = '" +
-                                 escapeSQL(tableName) + "';";
+        std::string createTableQuery =
+            "SELECT 'CREATE TABLE \"' || schemaname || '\".\"' || tablename || "
+            "'\" (' || "
+            "string_agg(column_name || ' ' || data_type || "
+            "CASE WHEN character_maximum_length IS NOT NULL THEN '(' || "
+            "character_maximum_length || ')' ELSE '' END || "
+            "CASE WHEN is_nullable = 'NO' THEN ' NOT NULL' ELSE '' END, ', ') "
+            "|| "
+            "');' as ddl "
+            "FROM information_schema.columns c "
+            "JOIN pg_tables pt ON c.table_name = pt.tablename AND "
+            "c.table_schema "
+            "= pt.schemaname "
+            "WHERE c.table_schema = '" +
+            escapeSQL(schema.schema_name) +
+            "' "
+            "AND c.table_name = '" +
+            escapeSQL(tableName) +
+            "' "
+            "GROUP BY schemaname, tablename;";
 
-      auto indexesResult = txn.exec(indexesQuery);
+        auto createResult = tableTxn.exec(createTableQuery);
 
-      for (const auto &indexRow : indexesResult) {
-        std::string indexDDL = indexRow[1].as<std::string>();
-        saveIndexDDL(schema.db_engine, schema.database_name, schema.schema_name,
-                     tableName, indexDDL);
+        if (!createResult.empty()) {
+          std::string ddl = createResult[0][0].as<std::string>();
+          saveTableDDL(schema.db_engine, schema.database_name,
+                       schema.schema_name, tableName, ddl);
+        }
+
+        std::string indexesQuery = "SELECT indexname, indexdef FROM pg_indexes "
+                                   "WHERE schemaname = '" +
+                                   escapeSQL(schema.schema_name) +
+                                   "' "
+                                   "AND tablename = '" +
+                                   escapeSQL(tableName) + "';";
+
+        auto indexesResult = tableTxn.exec(indexesQuery);
+
+        for (const auto &indexRow : indexesResult) {
+          std::string indexDDL = indexRow[1].as<std::string>();
+          saveIndexDDL(schema.db_engine, schema.database_name,
+                       schema.schema_name, tableName, indexDDL);
+        }
+
+        tableTxn.commit();
       }
     }
 
@@ -722,7 +731,6 @@ void DDLExporter::exportPostgreSQLDDL(const SchemaInfo &schema) {
     // Export Types
     exportPostgreSQLTypes(conn, schema);
 
-    txn.commit();
     Logger::info("DDLExporter",
                  "Exported PostgreSQL DDL for schema: " + schema.schema_name);
   } catch (const std::exception &e) {
@@ -734,17 +742,23 @@ void DDLExporter::exportPostgreSQLDDL(const SchemaInfo &schema) {
 void DDLExporter::exportPostgreSQLViews(pqxx::connection &conn,
                                         const SchemaInfo &schema) {
   try {
-    pqxx::work txn(conn);
-
+    // Get list of views
     std::string viewsQuery = "SELECT table_name FROM information_schema.views "
                              "WHERE table_schema = '" +
                              escapeSQL(schema.schema_name) + "';";
+    std::vector<std::string> viewNames;
+    {
+      pqxx::work txn(conn);
+      auto viewsResult = txn.exec(viewsQuery);
+      for (const auto &viewRow : viewsResult) {
+        viewNames.push_back(viewRow[0].as<std::string>());
+      }
+      txn.commit();
+    }
 
-    auto viewsResult = txn.exec(viewsQuery);
-
-    for (const auto &viewRow : viewsResult) {
-      std::string viewName = viewRow[0].as<std::string>();
-
+    // Export each view
+    for (const auto &viewName : viewNames) {
+      pqxx::work txn(conn);
       std::string createViewQuery =
           "SELECT 'CREATE VIEW \"' || schemaname || '\".\"' || viewname || '\" "
           "AS ' || definition || ';' as ddl "
@@ -760,9 +774,9 @@ void DDLExporter::exportPostgreSQLViews(pqxx::connection &conn,
         saveTableDDL(schema.db_engine, schema.database_name, schema.schema_name,
                      viewName, ddl);
       }
+      txn.commit();
     }
 
-    txn.commit();
     Logger::debug("DDLExporter", "Exported PostgreSQL views for schema: " +
                                      schema.schema_name);
   } catch (const std::exception &e) {
@@ -777,7 +791,7 @@ void DDLExporter::exportPostgreSQLFunctions(pqxx::connection &conn,
     pqxx::work txn(conn);
 
     std::string functionsQuery =
-        "SELECT proname, pg_get_functiondef(oid) as definition "
+        "SELECT p.proname, pg_get_functiondef(p.oid) as definition "
         "FROM pg_proc p "
         "JOIN pg_namespace n ON p.pronamespace = n.oid "
         "WHERE n.nspname = '" +
@@ -888,9 +902,16 @@ void DDLExporter::exportPostgreSQLSequences(pqxx::connection &conn,
     pqxx::work txn(conn);
 
     std::string sequencesQuery =
-        "SELECT sequencename, pg_get_sequencedef(oid) as definition "
+        "SELECT s.sequencename, "
+        "'CREATE SEQUENCE ' || s.schemaname || '.' || s.sequencename || "
+        "' INCREMENT BY ' || s.increment_by || "
+        "' MINVALUE ' || min_value || "
+        "' MAXVALUE ' || max_value || "
+        "' START WITH ' || start_value || "
+        "' CACHE ' || cache_size || "
+        "CASE WHEN cycle THEN ' CYCLE' ELSE ' NO CYCLE' END || ';' as "
+        "definition "
         "FROM pg_sequences s "
-        "JOIN pg_namespace n ON s.schemaname = n.nspname "
         "WHERE s.schemaname = '" +
         escapeSQL(schema.schema_name) + "';";
 
@@ -919,13 +940,30 @@ void DDLExporter::exportPostgreSQLTypes(pqxx::connection &conn,
     pqxx::work txn(conn);
 
     std::string typesQuery =
-        "SELECT t.typname, pg_get_typedef(t.oid) as definition "
+        "SELECT t.typname, "
+        "CASE t.typtype "
+        "  WHEN 'e' THEN 'CREATE TYPE ' || n.nspname || '.' || t.typname || ' "
+        "AS ENUM (' || "
+        "    (SELECT string_agg(quote_literal(enumlabel), ', ') "
+        "     FROM pg_enum e WHERE e.enumtypid = t.oid GROUP BY e.enumlabel) "
+        "|| ')' "
+        "  WHEN 'c' THEN 'CREATE TYPE ' || n.nspname || '.' || t.typname || ' "
+        "AS (' || "
+        "    (SELECT string_agg(a.attname || ' ' || "
+        "pg_catalog.format_type(a.atttypid, a.atttypmod), ', ' ORDER BY "
+        "a.attnum) "
+        "     FROM pg_attribute a "
+        "     WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT "
+        "a.attisdropped) || ')' "
+        "END as definition "
         "FROM pg_type t "
         "JOIN pg_namespace n ON t.typnamespace = n.oid "
         "WHERE n.nspname = '" +
         escapeSQL(schema.schema_name) +
         "' "
-        "AND t.typtype = 'c';";
+        "AND t.typtype IN ('e', 'c') "
+        "AND t.typname NOT LIKE '\\_%' "
+        "GROUP BY t.typname, t.typtype, n.nspname, t.oid, t.typrelid;";
 
     auto typesResult = txn.exec(typesQuery);
 
@@ -1232,7 +1270,9 @@ void DDLExporter::exportMSSQLDDL(const SchemaInfo &schema) {
       database = schema.schema_name;
 
     // Build MSSQL connection string
-    std::string odbcConnStr = "DRIVER={ODBC Driver 17 for SQL Server};";
+    std::string odbcConnStr =
+        "DRIVER={ODBC Driver 17 for SQL Server};"; // Usando Driver 17 que es
+                                                   // más estable
     odbcConnStr += "SERVER=" + server + "," + port + ";";
     odbcConnStr += "DATABASE=" + database + ";";
     if (!username.empty()) {
@@ -1241,6 +1281,9 @@ void DDLExporter::exportMSSQLDDL(const SchemaInfo &schema) {
     } else {
       odbcConnStr += "Trusted_Connection=yes;";
     }
+    odbcConnStr += "TrustServerCertificate=yes;";
+    odbcConnStr += "Encrypt=no;";
+    odbcConnStr += "Connection Timeout=30;";
 
     // Initialize ODBC
     SQLHENV env;

@@ -332,11 +332,16 @@ void DataGovernance::analyzeUsageStatistics(pqxx::connection &conn,
         metadata.last_vacuum = usageResult[0][1].as<std::string>();
       }
 
-      long long seq_scan = usageResult[0][2].as<long long>();
-      long long idx_scan = usageResult[0][4].as<long long>();
-      long long n_tup_ins = usageResult[0][6].as<long long>();
-      long long n_tup_upd = usageResult[0][7].as<long long>();
-      long long n_tup_del = usageResult[0][8].as<long long>();
+      long long seq_scan =
+          usageResult[0][2].is_null() ? 0 : usageResult[0][2].as<long long>();
+      long long idx_scan =
+          usageResult[0][4].is_null() ? 0 : usageResult[0][4].as<long long>();
+      long long n_tup_ins =
+          usageResult[0][6].is_null() ? 0 : usageResult[0][6].as<long long>();
+      long long n_tup_upd =
+          usageResult[0][7].is_null() ? 0 : usageResult[0][7].as<long long>();
+      long long n_tup_del =
+          usageResult[0][8].is_null() ? 0 : usageResult[0][8].as<long long>();
 
       metadata.query_count_daily =
           seq_scan + idx_scan + n_tup_ins + n_tup_upd + n_tup_del;

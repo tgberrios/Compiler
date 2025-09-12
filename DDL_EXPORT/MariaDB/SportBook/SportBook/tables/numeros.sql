@@ -1,7 +1,7 @@
 -- Table DDL for SportBook.numeros
 -- Engine: MariaDB
 -- Database: SportBook
--- Generated: 1757690707
+-- Generated: 1757691954
 
 CREATE TABLE `numeros` (
   `n` int(11) NOT NULL
