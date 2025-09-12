@@ -20,12 +20,25 @@ link_directories(
     /opt/microsoft/msodbcsql/lib64
 )
 
-add_executable(DataSync src/main.cpp src/Config.cpp src/logger.cpp src/DataGovernance.cpp src/DDLExporter.cpp src/MetricsCollector.cpp src/SyncReporter.cpp src/ConnectionPool.cpp)
+add_executable(DataSync 
+    src/main.cpp 
+    src/Config.cpp 
+    src/logger.cpp 
+    src/DataGovernance.cpp 
+    src/DDLExporter.cpp 
+    src/MetricsCollector.cpp 
+    src/SyncReporter.cpp 
+    src/ConnectionPool.cpp
+    src/DataQuality.cpp
+)
 
 # Configurar para que el ejecutable se genere en el directorio raíz
 set_target_properties(DataSync PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+# Add JSON library
+add_definitions(-DJSON_USE_IMPLICIT_CONVERSIONS=1)
 
 target_link_libraries(DataSync
     mariadb

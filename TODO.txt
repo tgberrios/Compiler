@@ -2,19 +2,3 @@ implementar retry y cierre de conexiones fallidas para la PG
 Implementar encriptación de credenciales
 Añadir soporte para más motores de BD
 Crear API REST para monitoreo
-
-Data Quality & Validation
-Add data integrity checks
-Implement checksum validation
-Add data type validation
-Create data quality reports
-
-
-
-
-
-Critical Performance Improvements
-Fix the sequential transfers bottleneck by implementing smart parallel transfers
-Optimize chunk sizes dynamically based on table size and system performance
-Implement bulk operations instead of row-by-row processing
-Add connection pooling optimization

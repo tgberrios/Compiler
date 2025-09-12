@@ -2,11 +2,12 @@
 #define STREAMINGDATA_H
 
 #include "Config.h"
-#include "DataGovernance.h"
 #include "DDLExporter.h"
-#include "MetricsCollector.h"
+#include "DataGovernance.h"
+#include "DataQuality.h"
 #include "MSSQLToPostgres.h"
 #include "MariaDBToPostgres.h"
+#include "MetricsCollector.h"
 #include "MongoToPostgres.h"
 #include "PostgresToPostgres.h"
 #include "SyncReporter.h"
@@ -26,22 +27,23 @@ public:
   ~StreamingData() = default;
 
   void initialize() {
-    //Logger::info("StreamingData", "Initializing DataSync system components");
-    
+    // Logger::info("StreamingData", "Initializing DataSync system components");
+
     DataGovernance dg;
     dg.initialize();
     dg.runDiscovery();
     dg.generateReport();
-    //Logger::info("StreamingData", "Data Governance initialization completed");
+    // Logger::info("StreamingData", "Data Governance initialization
+    // completed");
 
     DDLExporter ddlExporter;
     ddlExporter.exportAllDDL();
-    //Logger::info("StreamingData", "DDL Export completed");
+    // Logger::info("StreamingData", "DDL Export completed");
 
     MetricsCollector metricsCollector;
     metricsCollector.collectAllMetrics();
     Logger::info("StreamingData", "Metrics Collection completed");
-    
+
     Logger::info("StreamingData", "System initialization completed");
   }
 
@@ -56,6 +58,7 @@ public:
     MongoToPostgres mongoToPg;
     SyncReporter reporter;
     CatalogManager catalogManager;
+    DataQuality dataQuality;
 
     int minutes_counter = 0;
     Logger::info("StreamingData", "Establishing PostgreSQL connection");
@@ -68,16 +71,18 @@ public:
       catalogManager.syncCatalogMariaDBToPostgres();
       Logger::info("StreamingData", "MariaDB catalog sync completed");
     } catch (const std::exception &e) {
-      Logger::error("StreamingData", "MariaDB catalog sync failed: " + std::string(e.what()));
+      Logger::error("StreamingData",
+                    "MariaDB catalog sync failed: " + std::string(e.what()));
     }
-    
+
     Logger::info("StreamingData",
                  "Setting up target tables MariaDB -> PostgreSQL");
     try {
       mariaToPg.setupTableTargetMariaDBToPostgres();
       Logger::info("StreamingData", "MariaDB target tables setup completed");
     } catch (const std::exception &e) {
-      Logger::error("StreamingData", "MariaDB target tables setup failed: " + std::string(e.what()));
+      Logger::error("StreamingData", "MariaDB target tables setup failed: " +
+                                         std::string(e.what()));
     }
 
     Logger::info("StreamingData",
@@ -110,15 +115,29 @@ public:
     Logger::info("StreamingData", "Entering infinite loop for data transfers");
     while (true) {
       try {
-        //Logger::debug("StreamingData", "Loading configuration from database");
+        // Logger::debug("StreamingData", "Loading configuration from
+        // database");
         loadConfigFromDatabase(pgConn);
 
         // Ejecutar transferencias de forma secuencial para evitar conflictos
         Logger::info("StreamingData",
-                      "Executing MariaDB -> PostgreSQL transfer");
+                     "Executing MariaDB -> PostgreSQL transfer");
         try {
           mariaToPg.transferDataMariaDBToPostgres();
           Logger::info("MariaDBToPostgres", "Transfer completed successfully");
+
+          // Validate data quality for MariaDB tables
+          pqxx::work txn(pgConn);
+          auto tables = txn.exec(
+              "SELECT schema_name, table_name FROM metadata.catalog "
+              "WHERE db_engine = 'MariaDB' AND status = 'PERFECT_MATCH'");
+          txn.commit();
+
+          for (const auto &row : tables) {
+            std::string schema = row[0].as<std::string>();
+            std::string table = row[1].as<std::string>();
+            dataQuality.validateTable(pgConn, schema, table, "MariaDB");
+          }
         } catch (const std::exception &e) {
           Logger::error("MariaDBToPostgres",
                         "Transfer error: " + std::string(e.what()));
@@ -126,34 +145,73 @@ public:
           Logger::error("MariaDBToPostgres", "Unknown error during transfer");
         }
 
-        //Logger::debug("StreamingData",
-        //              "Executing MSSQL -> PostgreSQL transfer");
+        // Logger::debug("StreamingData",
+        //               "Executing MSSQL -> PostgreSQL transfer");
         try {
           mssqlToPg.transferDataMSSQLToPostgres();
+
+          // Validate data quality for MSSQL tables
+          pqxx::work txn(pgConn);
+          auto tables = txn.exec(
+              "SELECT schema_name, table_name FROM metadata.catalog "
+              "WHERE db_engine = 'MSSQL' AND status = 'PERFECT_MATCH'");
+          txn.commit();
+
+          for (const auto &row : tables) {
+            std::string schema = row[0].as<std::string>();
+            std::string table = row[1].as<std::string>();
+            dataQuality.validateTable(pgConn, schema, table, "MSSQL");
+          }
         } catch (const std::exception &e) {
           Logger::error("MSSQLToPostgres",
                         "Transfer error: " + std::string(e.what()));
         }
 
-        //Logger::debug("StreamingData",
-        //              "Executing PostgreSQL -> PostgreSQL transfer");
+        // Logger::debug("StreamingData",
+        //               "Executing PostgreSQL -> PostgreSQL transfer");
         try {
           pgToPg.transferDataPostgresToPostgres();
+
+          // Validate data quality for Postgres tables
+          pqxx::work txn(pgConn);
+          auto tables = txn.exec(
+              "SELECT schema_name, table_name FROM metadata.catalog "
+              "WHERE db_engine = 'Postgres' AND status = 'PERFECT_MATCH'");
+          txn.commit();
+
+          for (const auto &row : tables) {
+            std::string schema = row[0].as<std::string>();
+            std::string table = row[1].as<std::string>();
+            dataQuality.validateTable(pgConn, schema, table, "Postgres");
+          }
         } catch (const std::exception &e) {
           Logger::error("PostgresToPostgres",
                         "Transfer error: " + std::string(e.what()));
         }
 
-        //Logger::debug("StreamingData",
-        //              "Executing MongoDB -> PostgreSQL transfer");
+        // Logger::debug("StreamingData",
+        //               "Executing MongoDB -> PostgreSQL transfer");
         try {
           mongoToPg.transferDataMongoToPostgres();
+
+          // Validate data quality for MongoDB tables
+          pqxx::work txn(pgConn);
+          auto tables = txn.exec(
+              "SELECT schema_name, table_name FROM metadata.catalog "
+              "WHERE db_engine = 'MongoDB' AND status = 'PERFECT_MATCH'");
+          txn.commit();
+
+          for (const auto &row : tables) {
+            std::string schema = row[0].as<std::string>();
+            std::string table = row[1].as<std::string>();
+            dataQuality.validateTable(pgConn, schema, table, "MongoDB");
+          }
         } catch (const std::exception &e) {
           Logger::error("MongoToPostgres",
                         "Transfer error: " + std::string(e.what()));
         }
 
-        //Logger::debug("StreamingData", "Generating full report");
+        // Logger::debug("StreamingData", "Generating full report");
         reporter.generateFullReport(pgConn);
 
         minutes_counter += 1;
@@ -178,7 +236,7 @@ public:
               "Starting MongoDB -> PostgreSQL catalog synchronization");
           catalogManager.syncCatalogMongoToPostgres();
 
-          //Logger::debug("StreamingData", "Cleaning catalog");
+          // Logger::debug("StreamingData", "Cleaning catalog");
           catalogManager.cleanCatalog();
 
           minutes_counter = 0;
