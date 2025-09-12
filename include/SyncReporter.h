@@ -2,6 +2,7 @@
 #define SYNCREPORTER_H
 
 #include "Config.h"
+#include "ConnectionPool.h"
 #include "logger.h"
 #include <chrono>
 #include <cstdlib>
@@ -46,6 +47,14 @@ public:
     bool inProgress = false;
   };
 
+  struct PoolMetrics {
+    size_t totalPools = 0;
+    size_t activeConnections = 0;
+    size_t idleConnections = 0;
+    size_t failedConnections = 0;
+    std::string lastCleanup;
+  };
+
   struct ResourceMetrics {
     std::vector<double> cpuPerCore;
     double totalCpuUsage = 0.0;
@@ -77,6 +86,9 @@ public:
 
     // Enhanced System Resources
     ResourceMetrics resources;
+
+    // Connection Pool Metrics
+    PoolMetrics poolMetrics;
 
     // Database Health
     int activeConnections = 0;
@@ -121,6 +133,7 @@ public:
   void collectPerformanceMetrics(pqxx::connection &pgConn, SyncStats &stats);
   void collectDatabaseHealthMetrics(pqxx::connection &pgConn, SyncStats &stats);
   void collectSystemResourceMetrics(SyncStats &stats);
+  void collectConnectionPoolMetrics(SyncStats &stats);
   void collectRecentActivityMetrics(pqxx::connection &pgConn, SyncStats &stats);
   std::string formatBytes(double bytes);
   std::string formatDuration(double milliseconds);

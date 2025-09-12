@@ -616,6 +616,18 @@ void SyncReporter::printDashboard(const std::vector<TableStatus> &tables,
   std::cout << "└─ Status: "
             << (stats.dbResponseTime < 100 ? "✓ Healthy" : "⚠ Slow") << "\n";
 
+  // Connection Pool Section
+  std::cout << "\n■ CONNECTION POOLING\n";
+  std::cout << "├─ Total Pools: " << stats.poolMetrics.totalPools
+            << " (PG, MSSQL, MariaDB, MongoDB)\n";
+  std::cout << "├─ Active Connections: " << stats.poolMetrics.activeConnections
+            << "\n";
+  std::cout << "├─ Idle Connections: " << stats.poolMetrics.idleConnections
+            << "\n";
+  std::cout << "├─ Failed Connections: " << stats.poolMetrics.failedConnections
+            << "\n";
+  std::cout << "└─ Last Cleanup: " << stats.poolMetrics.lastCleanup << "\n";
+
   // Recent Activity Section
   std::cout << "\n▲ RECENT ACTIVITY (Last Hour)\n";
   std::cout << "├─ Transfers: " << stats.transfersLastHour << "\n";
@@ -629,6 +641,23 @@ void SyncReporter::printDashboard(const std::vector<TableStatus> &tables,
   std::cout << "\n◄ " << getCurrentTimestamp() << " | Press Ctrl+C to exit\n";
 }
 
+void SyncReporter::collectConnectionPoolMetrics(SyncStats &stats) {
+  if (g_connectionPool) {
+    auto poolStats = g_connectionPool->getStats();
+    stats.poolMetrics.totalPools = 4; // PG, MSSQL, MariaDB, MongoDB
+    stats.poolMetrics.activeConnections = poolStats.activeConnections;
+    stats.poolMetrics.idleConnections = poolStats.idleConnections;
+    stats.poolMetrics.failedConnections = poolStats.failedConnections;
+
+    // Format last cleanup time
+    auto now = std::chrono::steady_clock::now();
+    auto cleanupDiff = std::chrono::duration_cast<std::chrono::minutes>(
+                           now - poolStats.lastCleanup)
+                           .count();
+    stats.poolMetrics.lastCleanup = std::to_string(cleanupDiff) + "m ago";
+  }
+}
+
 void SyncReporter::generateFullReport(pqxx::connection &pgConn) {
   auto tables = getAllTableStatuses(pgConn);
   auto stats = calculateSyncStats(tables);
@@ -640,6 +669,7 @@ void SyncReporter::generateFullReport(pqxx::connection &pgConn) {
   collectPerformanceMetrics(pgConn, stats);
   collectDatabaseHealthMetrics(pgConn, stats);
   collectSystemResourceMetrics(stats);
+  collectConnectionPoolMetrics(stats);
   collectRecentActivityMetrics(pgConn, stats);
 
   printDashboard(tables, stats);

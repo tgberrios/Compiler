@@ -100,3 +100,7 @@ CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`productos` (`id`);
 CREATE UNIQUE INDEX `nombre` ON `SportBook`.`productos` (`nombre`);
 CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`productos` (`id`);
 CREATE UNIQUE INDEX `nombre` ON `SportBook`.`productos` (`nombre`);
+CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`productos` (`id`);
+CREATE UNIQUE INDEX `nombre` ON `SportBook`.`productos` (`nombre`);
+CREATE UNIQUE INDEX `PRIMARY` ON `SportBook`.`productos` (`id`);
+CREATE UNIQUE INDEX `nombre` ON `SportBook`.`productos` (`nombre`);

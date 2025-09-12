@@ -1,7 +1,7 @@
 -- Table DDL for mydatabase.info
 -- Engine: MongoDB
 -- Database: mydatabase
--- Generated: 1757697088
+-- Generated: 1757697817
 
 -- MongoDB View: info
 -- Schema: mydatabase
