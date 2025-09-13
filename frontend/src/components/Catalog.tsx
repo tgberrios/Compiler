@@ -56,12 +56,12 @@ const Td = styled.td`
   border-bottom: 1px solid #ddd;
 `;
 
-const StatusBadge = styled.span<{ status: string }>`
+const StatusBadge = styled.span<{ $status: string }>`
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 0.9em;
   background: ${props => {
-    switch (props.status) {
+    switch (props.$status) {
       case 'full_load': return '#e3f2fd';
       case 'incremental': return '#e8f5e9';
       case 'error': return '#ffebee';
@@ -70,7 +70,7 @@ const StatusBadge = styled.span<{ status: string }>`
     }
   }};
   color: ${props => {
-    switch (props.status) {
+    switch (props.$status) {
       case 'full_load': return '#1976d2';
       case 'incremental': return '#2e7d32';
       case 'error': return '#c62828';
@@ -80,12 +80,12 @@ const StatusBadge = styled.span<{ status: string }>`
   }};
 `;
 
-const ActiveBadge = styled.span<{ active: boolean }>`
+const ActiveBadge = styled.span<{ $active: boolean }>`
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 0.9em;
-  background: ${props => props.active ? '#e8f5e9' : '#ffebee'};
-  color: ${props => props.active ? '#2e7d32' : '#c62828'};
+  background: ${props => props.$active ? '#e8f5e9' : '#ffebee'};
+  color: ${props => props.$active ? '#2e7d32' : '#c62828'};
 `;
 
 const ActionButton = styled.button`
@@ -276,12 +276,12 @@ const Catalog = () => {
               <Td>{entry.schema_name}.{entry.table_name}</Td>
               <Td>{entry.db_engine}</Td>
               <Td>
-                <StatusBadge status={entry.status}>
+                <StatusBadge $status={entry.status}>
                   {entry.status}
                 </StatusBadge>
               </Td>
               <Td>
-                <ActiveBadge active={entry.active}>
+                <ActiveBadge $active={entry.active}>
                   {entry.active ? 'Active' : 'Inactive'}
                 </ActiveBadge>
               </Td>

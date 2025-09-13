@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import styled from 'styled-components';
+import { dashboardApi } from '../services/api';
+import type { DashboardStats } from '../services/api';
 
 const DashboardContainer = styled.div`
   background-color: white;
@@ -67,99 +69,166 @@ const Value = styled.div`
 `;
 
 const Dashboard = () => {
-  const [syncStatus] = useState({
-    progress: 75,
-    perfectMatch: 9,
-    listeningChanges: 6,
-    fullLoadActive: 0,
-    fullLoadInactive: 0,
-    noData: 3,
-    errors: 0,
-    currentProcess: 'dbo.test_performance (NO_DATA)'
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [stats, setStats] = useState<DashboardStats>({
+    syncStatus: {
+      progress: 75,
+      perfectMatch: 9,
+      listeningChanges: 6,
+      fullLoadActive: 0,
+      fullLoadInactive: 0,
+      noData: 3,
+      errors: 0,
+      currentProcess: 'dbo.test_performance (NO_DATA)'
+    },
+    systemResources: {
+      cpuUsage: '0.0',
+      memoryUsed: '12.90',
+      memoryTotal: '30.54',
+      memoryPercentage: '42.2',
+      rss: '12.90',
+      virtual: '19.35'
+    },
+    dbHealth: {
+      activeConnections: '1/100',
+      responseTime: '< 1ms',
+      bufferHitRate: '0.0',
+      cacheHitRate: '0.0',
+      status: 'Healthy'
+    },
+    connectionPool: {
+      totalPools: 4,
+      activeConnections: 0,
+      idleConnections: 0,
+      failedConnections: 0,
+      lastCleanup: '0m ago'
+    }
   });
 
-  const [systemResources] = useState({
-    cpuUsage: '0.0',
-    memoryUsed: '12.90',
-    memoryTotal: '30.54',
-    memoryPercentage: '42.2',
-    rss: '12.90',
-    virtual: '19.35'
-  });
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const data = await dashboardApi.getDashboardStats();
+        setStats(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Error loading dashboard data');
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  const [dbHealth] = useState({
-    activeConnections: '1/100',
-    responseTime: '< 1ms',
-    bufferHitRate: '0.0',
-    cacheHitRate: '0.0',
-    status: 'Healthy'
-  });
-
-  const [connectionPool] = useState({
-    totalPools: 4,
-    activeConnections: 0,
-    idleConnections: 0,
-    failedConnections: 0,
-    lastCleanup: '0m ago'
-  });
+    fetchStats();
+    // Actualizar cada 5 segundos
+    const interval = setInterval(fetchStats, 30000); // Actualizar cada 30 segundos
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <DashboardContainer>
-      <Header>
-        DataSync Real-Time Dashboard
-      </Header>
+      {loading && (
+        <div style={{ textAlign: 'center', padding: '20px' }}>
+          Loading dashboard data...
+        </div>
+      )}
 
-      <Section>
-        <SectionTitle>■ SYNCHRONIZATION STATUS</SectionTitle>
-        <ProgressBar progress={syncStatus.progress} />
-        <Grid>
-          <Value>Perfect Match: {syncStatus.perfectMatch}</Value>
-          <Value>Listening Changes: {syncStatus.listeningChanges}</Value>
-          <Value>Full Load (Active): {syncStatus.fullLoadActive}</Value>
-          <Value>Full Load (Inactive): {syncStatus.fullLoadInactive}</Value>
-          <Value>No Data: {syncStatus.noData}</Value>
-          <Value>Errors: {syncStatus.errors}</Value>
-        </Grid>
-        <Value style={{ marginTop: '20px' }}>► Currently Processing: {syncStatus.currentProcess}</Value>
-      </Section>
+      {error && (
+        <div style={{ 
+          color: 'red', 
+          padding: '20px', 
+          textAlign: 'center',
+          border: '1px solid red',
+          borderRadius: '4px',
+          margin: '20px',
+          backgroundColor: '#fff5f5'
+        }}>
+          <div style={{ fontWeight: 'bold', marginBottom: '10px' }}>Error al cargar datos:</div>
+          <div>{error}</div>
+          <button 
+            onClick={() => {
+              setError(null);
+              setLoading(true);
+              dashboardApi.getDashboardStats()
+                .then(data => setStats(data))
+                .catch(err => setError(err.message))
+                .finally(() => setLoading(false));
+            }}
+            style={{
+              marginTop: '10px',
+              padding: '8px 16px',
+              border: '1px solid red',
+              borderRadius: '4px',
+              background: 'white',
+              color: 'red',
+              cursor: 'pointer'
+            }}
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
 
-      <Section>
-        <SectionTitle>▲ TRANSFER PERFORMANCE BY ENGINE</SectionTitle>
-        <Value>No active transfers</Value>
-        <Value style={{ marginTop: '10px' }}>System ready for synchronization</Value>
-      </Section>
+      {!loading && !error && (
+        <>
+          <Header>
+            DataSync Real-Time Dashboard
+          </Header>
 
-      <Section>
-        <SectionTitle>● SYSTEM RESOURCES</SectionTitle>
-        <Grid>
-          <Value>CPU Usage: {systemResources.cpuUsage}% (0 cores)</Value>
-          <Value>Memory: {systemResources.memoryUsed} GB/{systemResources.memoryTotal} GB ({systemResources.memoryPercentage}%)</Value>
-          <Value>RSS: {systemResources.rss} GB</Value>
-          <Value>Virtual: {systemResources.virtual} GB</Value>
-        </Grid>
-      </Section>
+          <Section>
+            <SectionTitle>■ SYNCHRONIZATION STATUS</SectionTitle>
+            <ProgressBar progress={stats.syncStatus.progress} />
+            <Grid>
+              <Value>Perfect Match: {stats.syncStatus.perfectMatch}</Value>
+              <Value>Listening Changes: {stats.syncStatus.listeningChanges}</Value>
+              <Value>Full Load (Active): {stats.syncStatus.fullLoadActive}</Value>
+              <Value>Full Load (Inactive): {stats.syncStatus.fullLoadInactive}</Value>
+              <Value>No Data: {stats.syncStatus.noData}</Value>
+              <Value>Errors: {stats.syncStatus.errors}</Value>
+            </Grid>
+            <Value style={{ marginTop: '20px' }}>► Currently Processing: {stats.syncStatus.currentProcess}</Value>
+          </Section>
 
-      <Section>
-        <SectionTitle>■ DATABASE HEALTH</SectionTitle>
-        <Grid>
-          <Value>Active Connections: {dbHealth.activeConnections}</Value>
-          <Value>Response Time: {dbHealth.responseTime}</Value>
-          <Value>Buffer Hit Rate: {dbHealth.bufferHitRate}%</Value>
-          <Value>Cache Hit Rate: {dbHealth.cacheHitRate}%</Value>
-          <Value>Status: ✓ {dbHealth.status}</Value>
-        </Grid>
-      </Section>
+          <Section>
+            <SectionTitle>▲ TRANSFER PERFORMANCE BY ENGINE</SectionTitle>
+            <Value>No active transfers</Value>
+            <Value style={{ marginTop: '10px' }}>System ready for synchronization</Value>
+          </Section>
 
-      <Section>
-        <SectionTitle>■ CONNECTION POOLING</SectionTitle>
-        <Grid>
-          <Value>Total Pools: {connectionPool.totalPools}</Value>
-          <Value>Active Connections: {connectionPool.activeConnections}</Value>
-          <Value>Idle Connections: {connectionPool.idleConnections}</Value>
-          <Value>Failed Connections: {connectionPool.failedConnections}</Value>
-          <Value>Last Cleanup: {connectionPool.lastCleanup}</Value>
-        </Grid>
-      </Section>
+          <Section>
+            <SectionTitle>● SYSTEM RESOURCES</SectionTitle>
+            <Grid>
+              <Value>CPU Usage: {stats.systemResources.cpuUsage}% (0 cores)</Value>
+              <Value>Memory: {stats.systemResources.memoryUsed} GB/{stats.systemResources.memoryTotal} GB ({stats.systemResources.memoryPercentage}%)</Value>
+              <Value>RSS: {stats.systemResources.rss} GB</Value>
+              <Value>Virtual: {stats.systemResources.virtual} GB</Value>
+            </Grid>
+          </Section>
+
+          <Section>
+            <SectionTitle>■ DATABASE HEALTH</SectionTitle>
+            <Grid>
+              <Value>Active Connections: {stats.dbHealth.activeConnections}</Value>
+              <Value>Response Time: {stats.dbHealth.responseTime}</Value>
+              <Value>Buffer Hit Rate: {stats.dbHealth.bufferHitRate}%</Value>
+              <Value>Cache Hit Rate: {stats.dbHealth.cacheHitRate}%</Value>
+              <Value>Status: ✓ {stats.dbHealth.status}</Value>
+            </Grid>
+          </Section>
+
+          <Section>
+            <SectionTitle>■ CONNECTION POOLING</SectionTitle>
+            <Grid>
+              <Value>Total Pools: {stats.connectionPool.totalPools}</Value>
+              <Value>Active Connections: {stats.connectionPool.activeConnections}</Value>
+              <Value>Idle Connections: {stats.connectionPool.idleConnections}</Value>
+              <Value>Failed Connections: {stats.connectionPool.failedConnections}</Value>
+              <Value>Last Cleanup: {stats.connectionPool.lastCleanup}</Value>
+            </Grid>
+          </Section>
+        </>
+      )}
     </DashboardContainer>
   );
 };

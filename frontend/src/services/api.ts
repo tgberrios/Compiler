@@ -5,6 +5,7 @@ const api = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
+  timeout: 60000, // 60 segundos timeout
 });
 
 export interface CatalogEntry {
@@ -20,6 +21,61 @@ export interface CatalogEntry {
   cluster_name: string;
   updated_at: string;
 }
+
+export interface DashboardStats {
+  syncStatus: {
+    progress: number;
+    perfectMatch: number;
+    listeningChanges: number;
+    fullLoadActive: number;
+    fullLoadInactive: number;
+    noData: number;
+    errors: number;
+    currentProcess: string;
+  };
+  systemResources: {
+    cpuUsage: string;
+    memoryUsed: string;
+    memoryTotal: string;
+    memoryPercentage: string;
+    rss: string;
+    virtual: string;
+  };
+  dbHealth: {
+    activeConnections: string;
+    responseTime: string;
+    bufferHitRate: string;
+    cacheHitRate: string;
+    status: string;
+  };
+  connectionPool: {
+    totalPools: number;
+    activeConnections: number;
+    idleConnections: number;
+    failedConnections: number;
+    lastCleanup: string;
+  };
+}
+
+export const dashboardApi = {
+  getDashboardStats: async () => {
+    try {
+      const response = await api.get<DashboardStats>("/dashboard/stats");
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching dashboard stats:", error);
+      if (axios.isAxiosError(error) && error.response) {
+        console.error("Server error details:", error.response.data);
+        throw new Error(
+          error.response.data.details ||
+            error.response.data.error ||
+            error.message
+        );
+      }
+      throw error;
+    }
+  },
+};
 
 export const catalogApi = {
   // Obtener todas las entradas del catálogo
