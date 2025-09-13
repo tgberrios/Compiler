@@ -591,6 +591,82 @@ app.get("/api/governance/data", async (req, res) => {
   }
 });
 
+// Endpoints para la configuración del sistema
+app.get("/api/config", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT key, value, description, updated_at FROM metadata.config ORDER BY key"
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error getting configurations:", err);
+    res.status(500).json({
+      error: "Error al obtener configuraciones",
+      details: err.message,
+    });
+  }
+});
+
+app.post("/api/config", async (req, res) => {
+  const { key, value, description } = req.body;
+  try {
+    const result = await pool.query(
+      "INSERT INTO metadata.config (key, value, description) VALUES ($1, $2, $3) RETURNING *",
+      [key, value, description]
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Error creating configuration:", err);
+    res.status(500).json({
+      error: "Error al crear configuración",
+      details: err.message,
+    });
+  }
+});
+
+app.put("/api/config/:key", async (req, res) => {
+  const { key } = req.params;
+  const { value, description } = req.body;
+  try {
+    const result = await pool.query(
+      "UPDATE metadata.config SET value = $1, description = $2, updated_at = NOW() WHERE key = $3 RETURNING *",
+      [value, description, key]
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "Configuración no encontrada" });
+      return;
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Error updating configuration:", err);
+    res.status(500).json({
+      error: "Error al actualizar configuración",
+      details: err.message,
+    });
+  }
+});
+
+app.delete("/api/config/:key", async (req, res) => {
+  const { key } = req.params;
+  try {
+    const result = await pool.query(
+      "DELETE FROM metadata.config WHERE key = $1 RETURNING *",
+      [key]
+    );
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: "Configuración no encontrada" });
+      return;
+    }
+    res.json({ message: "Configuración eliminada correctamente" });
+  } catch (err) {
+    console.error("Error deleting configuration:", err);
+    res.status(500).json({
+      error: "Error al eliminar configuración",
+      details: err.message,
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

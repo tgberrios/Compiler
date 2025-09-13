@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import { governanceApi } from '../services/api';
 
@@ -344,16 +344,15 @@ const Governance = () => {
             {Array.from({ length: pagination.totalPages }, (_, i) => i + 1)
               .filter(p => Math.abs(p - page) <= 2 || p === 1 || p === pagination.totalPages)
               .map((p, i, arr) => (
-                <>
+                <React.Fragment key={p}>
                   {i > 0 && arr[i - 1] !== p - 1 && <span>...</span>}
                   <PageButton
-                    key={p}
-                    active={p === page}
+                    $active={p === page}
                     onClick={() => setPage(p)}
                   >
                     {p}
                   </PageButton>
-                </>
+                </React.Fragment>
               ))
             }
             

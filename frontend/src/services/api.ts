@@ -77,6 +77,86 @@ export const dashboardApi = {
   },
 };
 
+export interface ConfigEntry {
+  key: string;
+  value: string;
+  description: string | null;
+  updated_at: string;
+}
+
+export const configApi = {
+  getConfigs: async () => {
+    try {
+      const response = await api.get<ConfigEntry[]>("/config");
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching configurations:", error);
+      if (axios.isAxiosError(error) && error.response) {
+        throw new Error(
+          error.response.data.details ||
+            error.response.data.error ||
+            error.message
+        );
+      }
+      throw error;
+    }
+  },
+
+  createConfig: async (config: ConfigEntry) => {
+    try {
+      const response = await api.post<ConfigEntry>("/config", config);
+      return response.data;
+    } catch (error) {
+      console.error("Error creating configuration:", error);
+      if (axios.isAxiosError(error) && error.response) {
+        throw new Error(
+          error.response.data.details ||
+            error.response.data.error ||
+            error.message
+        );
+      }
+      throw error;
+    }
+  },
+
+  updateConfig: async (config: ConfigEntry) => {
+    try {
+      const response = await api.put<ConfigEntry>(
+        `/config/${config.key}`,
+        config
+      );
+      return response.data;
+    } catch (error) {
+      console.error("Error updating configuration:", error);
+      if (axios.isAxiosError(error) && error.response) {
+        throw new Error(
+          error.response.data.details ||
+            error.response.data.error ||
+            error.message
+        );
+      }
+      throw error;
+    }
+  },
+
+  deleteConfig: async (key: string) => {
+    try {
+      const response = await api.delete(`/config/${key}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error deleting configuration:", error);
+      if (axios.isAxiosError(error) && error.response) {
+        throw new Error(
+          error.response.data.details ||
+            error.response.data.error ||
+            error.message
+        );
+      }
+      throw error;
+    }
+  },
+};
+
 export const governanceApi = {
   getGovernanceData: async (params: {
     page?: number;
