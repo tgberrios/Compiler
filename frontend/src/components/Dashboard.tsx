@@ -199,10 +199,10 @@ const Dashboard = () => {
           <Section>
             <SectionTitle>● SYSTEM RESOURCES</SectionTitle>
             <Grid>
-              <Value>CPU Usage: {stats.systemResources.cpuUsage}% (0 cores)</Value>
-              <Value>Memory: {stats.systemResources.memoryUsed} GB/{stats.systemResources.memoryTotal} GB ({stats.systemResources.memoryPercentage}%)</Value>
-              <Value>RSS: {stats.systemResources.rss} GB</Value>
-              <Value>Virtual: {stats.systemResources.virtual} GB</Value>
+              <Value>CPU Usage: {stats.systemResources.cpuUsage}</Value>
+              <Value>Memory: {stats.systemResources.memoryUsed}</Value>
+              <Value>RSS: {stats.systemResources.rss}</Value>
+              <Value>Virtual: {stats.systemResources.virtual}</Value>
             </Grid>
           </Section>
 

@@ -3,6 +3,7 @@ import pkg from "pg";
 const { Pool } = pkg;
 import cors from "cors";
 import { spawn } from "child_process";
+import os from "os";
 
 const app = express();
 app.use(cors());
@@ -111,16 +112,60 @@ app.get("/api/dashboard/stats", async (req, res) => {
       GROUP BY db_engine
     `);
 
-    // 3. SYSTEM RESOURCES (from transfer_metrics)
-    const systemResources = await pool.query(`
-      SELECT 
-        ROUND(AVG(cpu_usage_percent)::numeric, 2) as cpu_usage,
-        ROUND(AVG(memory_used_mb)::numeric, 2) as memory_used,
-        MAX(memory_used_mb) as memory_peak,
-        ROUND(AVG(io_operations_per_second)::numeric, 2) as io_ops
-      FROM metadata.transfer_metrics
-      WHERE created_at > NOW() - INTERVAL '1 minute'
-    `);
+    // 3. SYSTEM RESOURCES (from OS)
+    console.log("Getting system resources...");
+
+    // CPU
+    const cpus = os.cpus();
+    const cpuCount = cpus.length;
+    const loadAvg = os.loadavg()[0];
+    const cpuUsagePercent = ((loadAvg * 100) / cpuCount).toFixed(1);
+
+    console.log("CPU Info:", {
+      count: cpuCount,
+      loadAvg,
+      usagePercent: cpuUsagePercent,
+    });
+
+    // Memory
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+    const usedMemory = totalMemory - freeMemory;
+    const memoryUsedGB = (usedMemory / (1024 * 1024 * 1024)).toFixed(2);
+    const memoryTotalGB = (totalMemory / (1024 * 1024 * 1024)).toFixed(2);
+    const memoryPercentage = ((usedMemory / totalMemory) * 100).toFixed(1);
+
+    console.log("Memory Info:", {
+      total: memoryTotalGB,
+      used: memoryUsedGB,
+      percentage: memoryPercentage,
+    });
+
+    // Process Memory
+    const processMemory = process.memoryUsage();
+    const rssGB = (processMemory.rss / (1024 * 1024 * 1024)).toFixed(2);
+    const virtualGB = (processMemory.heapTotal / (1024 * 1024 * 1024)).toFixed(
+      2
+    );
+
+    console.log("Process Memory:", {
+      rss: rssGB,
+      virtual: virtualGB,
+    });
+
+    const systemResources = {
+      rows: [
+        {
+          cpu_usage: cpuUsagePercent,
+          cpu_cores: cpuCount,
+          memory_used: memoryUsedGB,
+          memory_total: memoryTotalGB,
+          memory_percentage: memoryPercentage,
+          memory_rss: rssGB,
+          memory_virtual: virtualGB,
+        },
+      ],
+    };
 
     // 4. DATABASE HEALTH
     const dbHealth = await pool.query(`
@@ -174,20 +219,20 @@ app.get("/api/dashboard/stats", async (req, res) => {
         currentProcess: syncStatus.rows[0]?.current_process || "",
       },
       systemResources: {
-        cpuUsage: (systemResources.rows[0]?.cpu_usage || 0).toString(),
-        memoryUsed: (systemResources.rows[0]?.memory_used || 0).toString(),
-        memoryTotal: (systemResources.rows[0]?.memory_peak || 0).toString(),
-        memoryPercentage:
-          systemResources.rows[0]?.memory_used &&
-          systemResources.rows[0]?.memory_peak
-            ? (
-                (systemResources.rows[0].memory_used /
-                  systemResources.rows[0].memory_peak) *
-                100
-              ).toFixed(1)
-            : "0",
-        rss: (systemResources.rows[0]?.memory_used || 0).toString(),
-        virtual: (systemResources.rows[0]?.memory_peak || 0).toString(),
+        cpuUsage:
+          systemResources.rows[0].cpu_usage +
+          "% (" +
+          systemResources.rows[0].cpu_cores +
+          " cores)",
+        memoryUsed:
+          systemResources.rows[0].memory_used +
+          "/" +
+          systemResources.rows[0].memory_total +
+          " GB (" +
+          systemResources.rows[0].memory_percentage +
+          "%)",
+        rss: systemResources.rows[0].memory_rss + " GB",
+        virtual: systemResources.rows[0].memory_virtual + " GB",
       },
       dbHealth: {
         activeConnections: dbHealth.rows[0]
