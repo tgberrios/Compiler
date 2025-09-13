@@ -6,11 +6,7 @@ const DashboardContainer = styled.div`
   color: #333;
   padding: 20px;
   font-family: monospace;
-  min-height: 100vh;
-  width: 100vw;
   box-sizing: border-box;
-  margin: 0;
-  overflow-x: hidden;
 `;
 
 const Header = styled.div`
