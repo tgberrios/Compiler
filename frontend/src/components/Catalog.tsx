@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import EditModal from './EditModal';
 import styled from 'styled-components';
 import { format } from 'date-fns';
 import { catalogApi } from '../services/api';
@@ -135,6 +136,7 @@ const Catalog = () => {
   const [data, setData] = useState<CatalogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<CatalogEntry | null>(null);
 
   // Cargar datos del catálogo
   useEffect(() => {
@@ -178,6 +180,21 @@ const Catalog = () => {
   };
 
   // Forzar sincronización completa
+  const handleEdit = async (updatedEntry: CatalogEntry) => {
+    try {
+      setLoading(true);
+      await catalogApi.updateEntry(updatedEntry);
+      // Recargar datos después de la actualización
+      const entries = await catalogApi.getCatalogEntries();
+      setData(entries);
+      setSelectedEntry(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error updating entry');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleForceSync = async (entry: CatalogEntry) => {
     try {
       setLoading(true);
@@ -273,20 +290,22 @@ const Catalog = () => {
               <Td>{entry.last_offset}</Td>
               <Td>{entry.cluster_name}</Td>
               <Td>
-                <ActionButton onClick={() => handleToggleActive(entry)}>
-                  {entry.active ? '⏸ Pause' : '▶ Start'}
-                </ActionButton>
-                <ActionButton 
-                  onClick={() => handleForceSync(entry)}
-                  style={{ marginLeft: '8px' }}
-                >
-                  ↻ Sync
+                <ActionButton onClick={() => setSelectedEntry(entry)}>
+                  ✎ Edit
                 </ActionButton>
               </Td>
             </tr>
           ))}
         </tbody>
       </Table>
+
+      {selectedEntry && (
+        <EditModal
+          entry={selectedEntry}
+          onClose={() => setSelectedEntry(null)}
+          onSave={handleEdit}
+        />
+      )}
     </CatalogContainer>
   );
 };

@@ -25,9 +25,9 @@ export const catalogApi = {
   // Obtener todas las entradas del catálogo
   getCatalogEntries: async () => {
     try {
-      console.log('Fetching catalog entries...');
+      console.log("Fetching catalog entries...");
       const response = await api.get<CatalogEntry[]>("/catalog");
-      console.log('Received catalog data:', response.data);
+      console.log("Received catalog data:", response.data);
       return response.data;
     } catch (error) {
       console.error("Error fetching catalog:", error);
@@ -71,6 +71,17 @@ export const catalogApi = {
       return response.data;
     } catch (error) {
       console.error("Error triggering sync:", error);
+      throw error;
+    }
+  },
+
+  // Actualizar una entrada del catálogo
+  updateEntry: async (entry: CatalogEntry) => {
+    try {
+      const response = await api.put<CatalogEntry>("/catalog", entry);
+      return response.data;
+    } catch (error) {
+      console.error("Error updating entry:", error);
       throw error;
     }
   },
