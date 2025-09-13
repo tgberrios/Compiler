@@ -63,6 +63,9 @@ const Layout = () => {
         <NavItem to="/catalog">
           ▲ Catalog
         </NavItem>
+        <NavItem to="/monitor">
+          ● Monitor
+        </NavItem>
       </Sidebar>
       <MainContent>
         <Outlet />

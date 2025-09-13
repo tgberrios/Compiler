@@ -344,6 +344,47 @@ function formatUptime(seconds) {
     return `${minutes.toString().padStart(2, "0")}m`;
   }
 }
+// Obtener queries activas
+app.get("/api/monitor/queries", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        pid,                    -- ID del proceso
+        usename,               -- Usuario que ejecuta la query
+        datname,               -- Base de datos
+        client_addr,           -- Dirección IP del cliente
+        application_name,      -- Nombre de la aplicación
+        backend_start,         -- Cuándo inició el proceso
+        xact_start,           -- Cuándo inició la transacción
+        query_start,          -- Cuándo inició la query
+        state_change,         -- Último cambio de estado
+        wait_event_type,      -- Tipo de evento que espera
+        wait_event,           -- Evento específico que espera
+        state,                -- Estado actual (active, idle, etc)
+        query,                -- Texto de la query
+        EXTRACT(EPOCH FROM (now() - query_start))::integer as duration_seconds  -- Duración en segundos
+      FROM pg_stat_activity
+      WHERE state IN ('active', 'idle in transaction', 'idle in transaction (aborted)')
+      ORDER BY usename DESC
+    `);
+
+    const queries = result.rows.map((row) => ({
+      ...row,
+      duration: formatUptime(row.duration_seconds || 0),
+      query: row.query?.trim(),
+      state: row.state?.toUpperCase(),
+    }));
+
+    res.json(queries);
+  } catch (err) {
+    console.error("Error getting active queries:", err);
+    res.status(500).json({
+      error: "Error al obtener queries activas",
+      details: err.message,
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
