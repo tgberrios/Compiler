@@ -385,6 +385,212 @@ app.get("/api/monitor/queries", async (req, res) => {
   }
 });
 
+// Obtener métricas de calidad
+app.get("/api/quality/metrics", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    const engine = req.query.engine || "";
+    const status = req.query.status || "";
+
+    // Construir WHERE clause dinámicamente
+    const whereConditions = [];
+    const params = [];
+    let paramCount = 1;
+
+    if (engine) {
+      whereConditions.push(`source_db_engine = $${paramCount}`);
+      params.push(engine);
+      paramCount++;
+    }
+
+    if (status) {
+      whereConditions.push(`validation_status = $${paramCount}`);
+      params.push(status);
+      paramCount++;
+    }
+
+    // Agregar paginación
+    params.push(limit, offset);
+
+    const whereClause =
+      whereConditions.length > 0
+        ? "WHERE " + whereConditions.join(" AND ")
+        : "";
+
+    // Query principal
+    const result = await pool.query(
+      `
+      WITH latest_checks AS (
+        SELECT DISTINCT ON (schema_name, table_name, source_db_engine)
+          id,
+          schema_name,
+          table_name,
+          source_db_engine,
+          check_timestamp,
+          total_rows,
+          null_count,
+          duplicate_count,
+          data_checksum,
+          invalid_type_count,
+          type_mismatch_details,
+          out_of_range_count,
+          referential_integrity_errors,
+          constraint_violation_count,
+          integrity_check_details,
+          validation_status,
+          error_details,
+          quality_score,
+          check_duration_ms,
+          updated_at
+        FROM metadata.data_quality
+        ORDER BY schema_name, table_name, source_db_engine, updated_at DESC
+      )
+      SELECT *
+      FROM latest_checks
+      ${whereClause}
+      ORDER BY check_timestamp DESC
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+    `,
+      params
+    );
+
+    // Query para el total
+    const totalResult = await pool.query(
+      `
+      WITH latest_checks AS (
+        SELECT DISTINCT ON (schema_name, table_name, source_db_engine)
+          id
+        FROM metadata.data_quality
+        ORDER BY schema_name, table_name, source_db_engine, updated_at DESC
+      )
+      SELECT COUNT(*) as total
+      FROM latest_checks
+      ${whereClause}
+    `,
+      params.slice(0, -2)
+    );
+
+    const total = parseInt(totalResult.rows[0].total);
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      data: result.rows,
+      pagination: {
+        total,
+        totalPages,
+        currentPage: page,
+        limit,
+      },
+    });
+  } catch (err) {
+    console.error("Error getting quality metrics:", err);
+    res.status(500).json({
+      error: "Error al obtener métricas de calidad",
+      details: err.message,
+    });
+  }
+});
+
+// Obtener datos de governance
+app.get("/api/governance/data", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    const engine = req.query.engine || "";
+    const category = req.query.category || "";
+    const health = req.query.health || "";
+    const domain = req.query.domain || "";
+    const sensitivity = req.query.sensitivity || "";
+
+    // Construir WHERE clause dinámicamente
+    const whereConditions = [];
+    const params = [];
+    let paramCount = 1;
+
+    if (engine) {
+      whereConditions.push(`inferred_source_engine = $${paramCount}`);
+      params.push(engine);
+      paramCount++;
+    }
+
+    if (category) {
+      whereConditions.push(`data_category = $${paramCount}`);
+      params.push(category);
+      paramCount++;
+    }
+
+    if (health) {
+      whereConditions.push(`health_status = $${paramCount}`);
+      params.push(health);
+      paramCount++;
+    }
+
+    if (domain) {
+      whereConditions.push(`business_domain = $${paramCount}`);
+      params.push(domain);
+      paramCount++;
+    }
+
+    if (sensitivity) {
+      whereConditions.push(`sensitivity_level = $${paramCount}`);
+      params.push(sensitivity);
+      paramCount++;
+    }
+
+    // Agregar paginación
+    params.push(limit, offset);
+
+    const whereClause =
+      whereConditions.length > 0
+        ? "WHERE " + whereConditions.join(" AND ")
+        : "";
+
+    // Query principal
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM metadata.data_governance_catalog
+      ${whereClause}
+      ORDER BY last_analyzed DESC NULLS LAST
+      LIMIT $${paramCount} OFFSET $${paramCount + 1}
+    `,
+      params
+    );
+
+    // Query para el total
+    const totalResult = await pool.query(
+      `
+      SELECT COUNT(*) as total
+      FROM metadata.data_governance_catalog
+      ${whereClause}
+    `,
+      params.slice(0, -2)
+    );
+
+    const total = parseInt(totalResult.rows[0].total);
+    const totalPages = Math.ceil(total / limit);
+
+    res.json({
+      data: result.rows,
+      pagination: {
+        total,
+        totalPages,
+        currentPage: page,
+        limit,
+      },
+    });
+  } catch (err) {
+    console.error("Error getting governance data:", err);
+    res.status(500).json({
+      error: "Error al obtener datos de governance",
+      details: err.message,
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

@@ -66,6 +66,12 @@ const Layout = () => {
         <NavItem to="/monitor">
           ● Monitor
         </NavItem>
+        <NavItem to="/quality">
+          ◆ Quality
+        </NavItem>
+        <NavItem to="/governance">
+          ⬡ Governance
+        </NavItem>
       </Sidebar>
       <MainContent>
         <Outlet />

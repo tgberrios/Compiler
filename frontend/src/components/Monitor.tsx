@@ -53,11 +53,11 @@ const QuerySummary = styled.div`
   }
 `;
 
-const QueryDetails = styled.div<{ isOpen: boolean }>`
-  max-height: ${props => props.isOpen ? '500px' : '0'};
-  opacity: ${props => props.isOpen ? '1' : '0'};
+const QueryDetails = styled.div<{ $isOpen: boolean }>`
+  max-height: ${props => props.$isOpen ? '500px' : '0'};
+  opacity: ${props => props.$isOpen ? '1' : '0'};
   transition: all 0.3s ease;
-  border-top: ${props => props.isOpen ? '1px solid #eee' : 'none'};
+  border-top: ${props => props.$isOpen ? '1px solid #eee' : 'none'};
   background-color: white;
   overflow: hidden;
 `;
@@ -89,13 +89,13 @@ const QueryText = styled.pre`
   border: 1px solid #eee;
 `;
 
-const QueryState = styled.span<{ state: string }>`
+const QueryState = styled.span<{ $state: string }>`
   padding: 3px 8px;
   border-radius: 3px;
   font-size: 0.85em;
   font-weight: 500;
   background-color: ${props => {
-    switch (props.state) {
+    switch (props.$state) {
       case 'active': return '#e8f5e9';
       case 'idle in transaction': return '#fff3e0';
       case 'idle in transaction (aborted)': return '#ffebee';
@@ -175,14 +175,14 @@ const Monitor = () => {
                     {query.query?.substring(0, 50)}...
                   </div>
                   <div>{query.duration}</div>
-                  <QueryState state={query.state}>
-                    {query.state === 'idle in transaction (aborted)' ? 'aborted' : 
+                  <QueryState $state={query.state}>
+                    {query.state === 'idle in transaction (aborted)' ? 'aborted' :
                      query.state === 'idle in transaction' ? 'in trans' : 
                      query.state}
                   </QueryState>
                 </QuerySummary>
                 
-                <QueryDetails isOpen={openQueryId === query.pid}>
+                <QueryDetails $isOpen={openQueryId === query.pid}>
                   <DetailGrid>
                     <DetailLabel>Application:</DetailLabel>
                     <DetailValue>{query.application_name || '-'}</DetailValue>

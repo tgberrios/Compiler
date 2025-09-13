@@ -3,6 +3,8 @@ import Layout from './components/Layout'
 import Dashboard from './components/Dashboard'
 import Catalog from './components/Catalog'
 import Monitor from './components/Monitor'
+import Quality from './components/Quality'
+import Governance from './components/Governance'
 
 function App() {
   return (
@@ -12,6 +14,8 @@ function App() {
           <Route index element={<Dashboard />} />
           <Route path="catalog" element={<Catalog />} />
           <Route path="monitor" element={<Monitor />} />
+          <Route path="quality" element={<Quality />} />
+          <Route path="governance" element={<Governance />} />
         </Route>
       </Routes>
     </BrowserRouter>
