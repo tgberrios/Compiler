@@ -19,7 +19,7 @@ public:
     double executionTime;
     int rowsExamined;
     int rowsReturned;
-    std::vector<std::string> issues; // "seq_scan", "missing_index", "n_plus_one"
+    std::vector<std::string> issues; // seq_scan, missing_index, n_plus_one, seq_scan_large, nested_loop_many_loops, filter_on_seq_scan, sort_spill_disk, temp_file_usage, estimate_mismatch, bitmap_heap_large, high_buffer_read, index_scan_slow, hash_join_large, merge_join_expensive, cte_materialized, subquery_scan, subplan_correlated, limit_full_scan, hash_spill_disk, large_plan_width
     std::vector<std::string> recommendations;
     std::chrono::system_clock::time_point analyzedAt;
   };
@@ -70,8 +70,12 @@ private:
   std::vector<std::string> detectIssues(const json& explainPlan);
   std::vector<std::string> generateRecommendations(const json& explainPlan,
                                                     const std::vector<std::string>& issues);
+  void ensureTablesExist();
   bool saveAnalysisToDatabase(const QueryAnalysis& analysis);
   bool saveSuggestionToDatabase(const OptimizationSuggestion& suggestion);
+
+  /** Build optimization suggestions from an analysis (issues + recommendations + plan). */
+  std::vector<OptimizationSuggestion> buildSuggestionsFromAnalysis(const QueryAnalysis& analysis);
 };
 
 #endif // QUERY_PERFORMANCE_ANALYZER_H

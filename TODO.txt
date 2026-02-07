@@ -5,10 +5,27 @@
 
 anadir test en los otros para nulls, esto y lo otros para todos los procesos de datos digamos cuando se testean las queries deberia entregar esos valores para ver que tan mal esta todo digamos ?
 
+newsboat: Un lector de noticias RSS. Puedes tener las noticias del día rotando en un recuadro pequeño.
+
+ticker: Para ver el precio de criptomonedas o acciones de la bolsa en tiempo real con gráficas ASCII.
 
 
+exec-once = sleep 20 &&  ~/scripts/auto_backup.s
  Pokepath
 
+LA APP DE ASTRONOMIA ? 
+
+
+tener mucho cuidado con las collations 
+
+
+becesuti actyakuzar ek waybar porque tengo 10 workspaces
+
+tengo que arreglar el fast fetcj 
+
+CHEQUEAR LA DOCUEMTNACION DE WAYBAR
+nano ~/.config/hypr/hypridle.conf
+no ocupo el hyprpaer. fireforx
 
 ## 📊 FASE 2: PROCESAMIENTO DE DATOS
 **Orden lógico:** Requiere connectors y formatos de archivo completados

@@ -426,7 +426,7 @@ int handleMonitoringCommand() {
       nlohmann::json output;
       output["success"] = false;
       output["error"] = "Database configuration failed to initialize";
-      std::cerr << output.dump(2) << std::endl;
+      std::cout << output.dump(2) << std::endl;
       return 1;
     }
     
@@ -441,7 +441,7 @@ int handleMonitoringCommand() {
       nlohmann::json output;
       output["success"] = false;
       output["error"] = "No input provided";
-      std::cerr << output.dump(2) << std::endl;
+      std::cout << output.dump(2) << std::endl;
       Logger::shutdown();
       return 1;
     }
@@ -631,6 +631,21 @@ int handleMonitoringCommand() {
         output["error"] = "Failed to analyze query";
       }
       
+    } else if (operation == "get_regressions") {
+      QueryPerformanceAnalyzer analyzer(metadataConnStr);
+      int days = request.value("days", 7);
+      auto regs = analyzer.detectRegressions(days);
+      output["success"] = true;
+      output["regressions"] = nlohmann::json::array();
+      for (const auto& r : regs) {
+        nlohmann::json regJson;
+        regJson["query_fingerprint"] = r.queryFingerprint;
+        regJson["previous_avg_time"] = r.previousAvgTime;
+        regJson["current_avg_time"] = r.currentAvgTime;
+        regJson["regression_percent"] = r.regressionPercent;
+        output["regressions"].push_back(regJson);
+      }
+      
     } else {
       output["success"] = false;
       output["error"] = "Unknown operation: " + operation;
@@ -644,7 +659,7 @@ int handleMonitoringCommand() {
     nlohmann::json output;
     output["success"] = false;
     output["error"] = e.what();
-    std::cerr << output.dump(2) << std::endl;
+    std::cout << output.dump(2) << std::endl;
     Logger::shutdown();
     return 1;
   }
