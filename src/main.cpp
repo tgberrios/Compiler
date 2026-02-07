@@ -27,6 +27,7 @@
 #include <fstream>
 #include <sstream>
 #include <chrono>
+#include <ctime>
 #include <iomanip>
 #include <thread>
 
@@ -553,10 +554,17 @@ int handleMonitoringCommand() {
         bottleneckJson["id"] = b.id;
         bottleneckJson["resource_type"] = b.resourceType;
         bottleneckJson["severity"] = b.severity;
+        if (!b.component.empty()) bottleneckJson["component"] = b.component;
         bottleneckJson["description"] = b.description;
         bottleneckJson["recommendations"] = nlohmann::json::array();
         for (const auto& rec : b.recommendations) {
           bottleneckJson["recommendations"].push_back(rec);
+        }
+        std::time_t t = std::chrono::system_clock::to_time_t(b.detectedAt);
+        std::tm* tm = std::gmtime(&t);
+        char buf[32];
+        if (tm && std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", tm)) {
+          bottleneckJson["detected_at"] = std::string(buf);
         }
         output["bottlenecks"].push_back(bottleneckJson);
       }

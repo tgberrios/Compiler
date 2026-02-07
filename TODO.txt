@@ -90,8 +90,13 @@ Min: 0.0 RPS
 
 DataSync executable not found at: /home/iks/Documents/DataSync-UI/DataSync/DataSync
 
+http://localhost:9876/monitoring/tracing
+http://localhost:9876/monitoring/apm
+
+como lo testeo ?
 
 
+en catalog tengo que testear todas las fuentes aveces aunque este en catalog no siempre quiero jalar todo talvez solo unas columnas entonces poder filtrar
 
 
 ## 🏗️ FASE 13: OPTIMIZACIÓN Y REFACTORIZACIÓN FINAL

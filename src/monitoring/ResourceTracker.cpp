@@ -1,8 +1,11 @@
 #include "monitoring/ResourceTracker.h"
 #include "core/database_config.h"
+#include <cstdint>
 #include <fstream>
 #include <pqxx/pqxx>
 #include <sstream>
+#include <thread>
+#include <chrono>
 #include <sys/sysinfo.h>
 
 ResourceTracker::ResourceTracker(const std::string& connectionString)
@@ -78,14 +81,42 @@ ResourceTracker::ResourceMetrics ResourceTracker::collectCurrentMetrics() {
 }
 
 double ResourceTracker::getCpuPercent() {
-  // Simplified: read from /proc/loadavg
-  std::ifstream loadavg("/proc/loadavg");
-  if (loadavg.is_open()) {
-    double load1, load5, load15;
-    loadavg >> load1 >> load5 >> load15;
-    return load1 * 100.0; // Approximate CPU usage
+  // Real CPU usage 0-100% from /proc/stat (delta of idle vs total over two samples).
+  // Load average (load * 100) is not a percentage and can exceed 100; /proc/stat gives correct %.
+  static bool havePrevious = false;
+  static uint64_t prevTotal = 0;
+  static uint64_t prevIdle = 0;
+
+  std::ifstream stat("/proc/stat");
+  if (!stat.is_open()) return 0.0;
+
+  std::string line;
+  if (!std::getline(stat, line) || line.compare(0, 4, "cpu ") != 0) return 0.0;
+
+  uint64_t user, nice, system, idle, iowait, irq, softirq, steal;
+  std::istringstream iss(line.substr(4));
+  iss >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal;
+  uint64_t idleTotal = idle + iowait;
+  uint64_t total = user + nice + system + idle + iowait + irq + softirq + steal;
+
+  if (!havePrevious) {
+    havePrevious = true;
+    prevTotal = total;
+    prevIdle = idleTotal;
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    return getCpuPercent(); // Second sample for first valid delta
   }
-  return 0.0;
+
+  uint64_t deltaTotal = total - prevTotal;
+  uint64_t deltaIdle = idleTotal - prevIdle;
+  prevTotal = total;
+  prevIdle = idleTotal;
+
+  if (deltaTotal == 0) return 0.0;
+  double percent = 100.0 * (1.0 - static_cast<double>(deltaIdle) / static_cast<double>(deltaTotal));
+  if (percent < 0.0) percent = 0.0;
+  if (percent > 100.0) percent = 100.0;
+  return percent;
 }
 
 std::vector<double> ResourceTracker::getCpuPerCore() {
