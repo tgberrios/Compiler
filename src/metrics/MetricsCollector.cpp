@@ -27,6 +27,17 @@ void MetricsCollector::collectAllMetrics() {
     collectPerformanceMetrics();
     collectMetadataMetrics();
     collectTimestampMetrics();
+    // Ensure every metric has started_at and completed_at so the dashboard can compute throughput.
+    // collectTimestampMetrics() only fills them for MongoDB (mongo_last_sync_time); for MSSQL/MariaDB
+    // we use current time as completed_at and estimate started_at as 1 hour earlier.
+    for (auto &metric : metrics) {
+      if (metric.completed_at.empty()) {
+        metric.completed_at = TimeUtils::getCurrentTimestamp();
+        metric.started_at = getEstimatedStartTime(metric.completed_at);
+      } else if (metric.started_at.empty()) {
+        metric.started_at = getEstimatedStartTime(metric.completed_at);
+      }
+    }
     saveMetricsToDatabase();
     generateMetricsReport();
 
@@ -667,7 +678,9 @@ MetricsCollector::getEstimatedStartTime(const std::string &completedAt) {
     std::istringstream ss(completedAt);
     ss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
 
-    if (ss.fail() || !ss.eof()) {
+    // Do not require ss.eof(): completedAt may have fractional seconds (e.g. .560000)
+    // that get_time does not consume; we only need the date/time part for the 1h offset.
+    if (ss.fail()) {
       return TimeUtils::getCurrentTimestamp();
     }
 
