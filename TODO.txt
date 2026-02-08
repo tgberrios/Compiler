@@ -1,134 +1,117 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │ TAREAS PENDIENTES - DataSync                                    │
-│ ORDENADAS POR DEPENDENCIAS LÓGICAS                              │
+│ Organizadas por fases y tipo                                    │
 └─────────────────────────────────────────────────────────────────┘
 
-anadir test en los otros para nulls, esto y lo otros para todos los procesos de datos digamos cuando se testean las queries deberia entregar esos valores para ver que tan mal esta todo digamos ?
-
-newsboat: Un lector de noticias RSS. Puedes tener las noticias del día rotando en un recuadro pequeño.
-
-ticker: Para ver el precio de criptomonedas o acciones de la bolsa en tiempo real con gráficas ASCII.
-
-
-exec-once = sleep 20 &&  ~/scripts/auto_backup.s
- Pokepath
-
-LA APP DE ASTRONOMIA ? 
-
-
-tener mucho cuidado con las collations 
-
-
-becesuti actyakuzar ek waybar porque tengo 10 workspaces
-
-tengo que arreglar el fast fetcj 
-
-CHEQUEAR LA DOCUEMTNACION DE WAYBAR
-nano ~/.config/hypr/hypridle.conf
-no ocupo el hyprpaer. fireforx
+═══════════════════════════════════════════════════════════════════
+ PARTE 1: DATASYNC — TAREAS DEL PROYECTO
+═══════════════════════════════════════════════════════════════════
 
 ## 📊 FASE 2: PROCESAMIENTO DE DATOS
 **Orden lógico:** Requiere connectors y formatos de archivo completados
 
-### 2.2. Data modeling avanzado (patrones de modelado - pueden implementarse con estructuras genéricas existentes)
-- Outrigger dimensions
-- Junk dimensions
+### 2.2. Data modeling avanzado (patrones de modelado)
 - Degenerate dimensions
 - Factless fact tables
+- Junk dimensions
+- Outrigger dimensions
 
 **Nota:** SCD Type 4 y 6 ya están implementados en `MergeStrategyExecutor`. Los patrones restantes son conceptos de modelado dimensional que pueden implementarse usando las estructuras genéricas de `DimensionTable` y `FactTable` existentes, pero no tienen soporte explícito/dedicado en el código.
-
-
-
-
 
 
 ## 🧪 FASE 5: TESTING Y VALIDACIÓN
 **Orden lógico:** Requiere funcionalidades implementadas para poder testearlas
 
 ### 5.1. Testing y validación
-- Unit tests para transformaciones
-- Integration tests
-- Data quality tests (Great Expectations, dbt tests)
-- Regression testing
-- Data profiling automático
-- Custom validation rules
-- Referential integrity checks
 - Business rule validation
+- Custom validation rules
+- Data profiling automático
+- Data quality tests (Great Expectations, dbt tests)
+- Integration tests
+- Referential integrity checks
+- Regression testing
 - Schema validation
+- Unit tests para transformaciones
 
----
+### 5.2. Tests específicos a añadir
+- Tests de nulls en procesos de datos: al testear queries, entregar esos valores para ver estado real.
+- Testear column encryption.
+- Testear ROW-LEVEL SECURITY (RLS).
+- Monitoring: cómo testear tracing y APM.
+  - http://localhost:9876/monitoring/tracing
+  - http://localhost:9876/monitoring/apm
+- Catalog: testear todas las fuentes; a veces no se quiere jalar todo sino solo unas columnas → poder filtrar columnas.
 
 
+## 🖥️ UI Y RUTAS
+- Verificar si faltan rutas en layout.
+- Comprobar que todo lo que está en la UI y todo lo de C++ tenga su correspondiente UI.
 
 
----
-nos faltan ruitas en layout ? 
-si metimos todo lo que tiene que estar en la ui y todo lo de cpp tiene su ui ? 
+## 📚 DOCUMENTACIÓN DEL PROYECTO (Y CURSOR)
+**Objetivo:** Documentar el proyecto para mantenimiento y para que Cursor (y otros) tengan contexto útil.
+
+### Documentación por tipo de artefacto
+- **C++:** Documentar módulos, clases y APIs (.cpp / .hpp): propósito, dependencias, contratos.
+- **Frontend:** Documentar componentes, páginas, rutas y estado (React/Vue/etc.): estructura de la UI y flujos.
+- **SQL:** Documentar esquemas, migraciones y scripts (.sql): tablas, capas (raw/staging/curated), convenciones.
+- **Otros:** Config (YAML/JSON), DAGs de Airflow, scripts de ingestión: qué hace cada uno y dónde se usa.
+
+### Integración con Cursor
+- Añadir docs del proyecto a Cursor (reglas, skills, README o .cursor/docs) para que el asistente use contexto de DataSync.
+- Mantener un índice o README que enlace a la doc por capa (backend, frontend, DB, orchestration).
 
 
+## 🗄️ FASE 12: MANTENIMIENTO
 
-
-### 12.3. Tareas de Mantenimiento
+### 12.3. Tareas de Mantenimiento (orden alfabético)
 - Que archivos podemos eliminar y cuáles no
 
 
-ordenarlo alfabeticamente
-
-http://localhost:9876/monitoring/tracing
-http://localhost:9876/monitoring/apm
-
-como lo testeo ?
+### 12.4. Tareas Personales (no relacionadas con DataSync)
+- yay (actualizar el sistema con yay)
 
 
-en catalog tengo que testear todas las fuentes aveces aunque este en catalog no siempre quiero jalar todo talvez solo unas columnas entonces poder filtrar
-
-
-testear column encryption
-
-
-testear 
-
-ROW-LEVEL SECURITY
-┌──ROW-LEVEL SECURITY (RLS)
 ## 🏗️ FASE 13: OPTIMIZACIÓN Y REFACTORIZACIÓN FINAL
-**Orden lógico:** Debe completarse al final, después de tener todas las funcionalidades implementadas y probadas
+**Orden lógico:** Al final, después de tener todas las funcionalidades implementadas y probadas
 
 ### 13.1. Base de Datos y Setup
+- FIRST SETUP DE LA DB
+  - Backup de la DB con solo estructura
+  - Backup de data de config
+  - Restore desde backup
+  - Script de inicialización automática
 - Normalizar la DB
   - Mejorar estructura de base de datos
   - Optimización y organización
 
-- FIRST SETUP DE LA DB
-  - Backup de la DB con solo estructura
-  - Backup de data de config
-  - Script de inicialización automática
-  - Restore desde backup
-
 ### 13.2. API Base
 - API REST MÁS COMPLETA
+  - API versioning
+  - Autenticación mejorada (API keys, OAuth2)
   - Endpoints para todas las funcionalidades
   - Swagger/OpenAPI documentation
-  - API versioning
-  - Autenticación mejorada (API keys, OAuth2) 
 
 
+═══════════════════════════════════════════════════════════════════
+ PARTE 2: NOTAS Y CUIDADOS (DATASYNC)
+═══════════════════════════════════════════════════════════════════
+
+- Collations: tener mucho cuidado con las collations.
+- Fast fetch: arreglar el fast fetch.
 
 
+═══════════════════════════════════════════════════════════════════
+ PARTE 3: PERSONAL / SISTEMA (fuera de DataSync)
+═══════════════════════════════════════════════════════════════════
 
 
-
-
-
-
- ### 12.4. Tareas Personales (No relacionadas con DataSync)
-- yay (actualizar el sistema con yay)
-
----
-app de calendario como calcularse 
-app de todo
-
-- Una aplicación de webhooks para alertas full en db o meterlo en el monitor
-rpg
-
-
+### Apps / ideas
+- App de astronomía
+- App de calendario (cómo calcularse)
+- App de todo
+- newsboat: lector RSS; noticias del día en recuadro pequeño.
+- ticker: precio cripto/acciones en tiempo real con gráficas ASCII.
+- Webhooks para alertas (full en DB o integrar en monitor).
+- RPG (nota)
+- Pokepath (nota)
