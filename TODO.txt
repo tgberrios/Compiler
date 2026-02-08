@@ -67,28 +67,13 @@ nos faltan ruitas en layout ?
 si metimos todo lo que tiene que estar en la ui y todo lo de cpp tiene su ui ? 
 
 
-### 12.2. Security Pendiente
-- Me falta crear encryption de probar
-- Row security level
-- Audit trail
+
 
 ### 12.3. Tareas de Mantenimiento
 - Que archivos podemos eliminar y cuáles no
 
 
 ordenarlo alfabeticamente
-
-
-▒Network
-0.0 IOPS
-▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-Min: 0.0 IOPSMax: 0.0 IOPS
-·Throughput
-0.0 RPS
-▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
-Min: 0.0 RPS
-
-DataSync executable not found at: /home/iks/Documents/DataSync-UI/DataSync/DataSync
 
 http://localhost:9876/monitoring/tracing
 http://localhost:9876/monitoring/apm
@@ -99,6 +84,13 @@ como lo testeo ?
 en catalog tengo que testear todas las fuentes aveces aunque este en catalog no siempre quiero jalar todo talvez solo unas columnas entonces poder filtrar
 
 
+testear column encryption
+
+
+testear 
+
+ROW-LEVEL SECURITY
+┌──ROW-LEVEL SECURITY (RLS)
 ## 🏗️ FASE 13: OPTIMIZACIÓN Y REFACTORIZACIÓN FINAL
 **Orden lógico:** Debe completarse al final, después de tener todas las funcionalidades implementadas y probadas
 
@@ -131,14 +123,12 @@ en catalog tengo que testear todas las fuentes aveces aunque este en catalog no 
 
  ### 12.4. Tareas Personales (No relacionadas con DataSync)
 - yay (actualizar el sistema con yay)
-- descargar vencord
-- juego en la terminal
 
 ---
 app de calendario como calcularse 
 app de todo
 
-- Una aplicación de webhooks en terminal
+- Una aplicación de webhooks para alertas full en db o meterlo en el monitor
 rpg
 
 
