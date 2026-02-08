@@ -106,6 +106,21 @@
 ═══════════════════════════════════════════════════════════════════
 
 
+docker run -d --name OracleTestDB -p 1521:1521 -e ORACLE_PWD=Yucaquemada1 container-registry.oracle.com/database/express:21.3.0-xe
+
+Si quieres...,Usa este comando
+Ver si está corriendo,docker ps
+Detener la base,docker stop OracleTestDB
+Iniciarla de nuevo,docker start OracleTestDB
+Ver qué está pasando adentro,docker stats OracleTestDB
+
+host=localhost;user=SYSTEM;password=Yucaquemada1;db=XE;port=1521
+
+
+oracle esta bugueado
+
+
+
 ### Apps / ideas
 - App de astronomía
 - App de calendario (cómo calcularse)
