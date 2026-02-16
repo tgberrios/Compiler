@@ -1,8 +1,6 @@
 #include "core/Config.h"
 #include "core/database_config.h"
 #include "sync/StreamingData.h"
-#include "backup/backup_manager.h"
-#include "backup/backup_scheduler.h"
 #include "sync/DBTExecutor.h"
 #include "governance/DynamicMaskingEngine.h"
 #include "governance/TokenizationManager.h"
@@ -78,85 +76,6 @@ void signalHandler(int signal) {
   }
 }
 } // namespace
-
-int handleBackupCommand(int argc, char* argv[]) {
-  if (argc < 3) {
-    std::cerr << "Usage: DataSync backup <create|schedule> <config_json>" << std::endl;
-    return 1;
-  }
-  
-  std::string command = argv[2];
-  
-  if (command == "create") {
-    if (argc < 4) {
-      std::cerr << "Usage: DataSync backup create <config_json>" << std::endl;
-      return 1;
-    }
-    
-    try {
-      std::ifstream config_file(argv[3]);
-      if (!config_file.is_open()) {
-        std::cerr << "Error: Cannot open config file: " << argv[3] << std::endl;
-        return 1;
-      }
-      
-      nlohmann::json config_json;
-      config_file >> config_json;
-      
-      BackupConfig config;
-      config.backup_name = config_json["backup_name"];
-      config.db_engine = config_json["db_engine"];
-      config.connection_string = config_json["connection_string"];
-      config.database_name = config_json["database_name"];
-      config.backup_type = BackupManager::parseBackupType(config_json["backup_type"]);
-      config.file_path = config_json["file_path"];
-      
-      auto start_time = std::chrono::steady_clock::now();
-      BackupResult result = BackupManager::createBackup(config);
-      auto end_time = std::chrono::steady_clock::now();
-      int duration = std::chrono::duration_cast<std::chrono::seconds>(
-        end_time - start_time).count();
-      
-      nlohmann::json output;
-      output["success"] = result.success;
-      output["file_path"] = result.file_path;
-      output["file_size"] = result.file_size;
-      output["duration_seconds"] = duration;
-      if (!result.success) {
-        output["error_message"] = result.error_message;
-      }
-      
-      std::cout << output.dump(2) << std::endl;
-      
-      return result.success ? 0 : 1;
-    } catch (const std::exception& e) {
-      std::cerr << "Error: " << e.what() << std::endl;
-      return 1;
-    }
-  } else if (command == "schedule") {
-    DatabaseConfig::loadFromFile("config.json");
-    if (!DatabaseConfig::isInitialized()) {
-      std::cerr << "Error: Database configuration failed to initialize." << std::endl;
-      return 1;
-    }
-    
-    Logger::initialize();
-    BackupScheduler::start();
-    
-    std::signal(SIGINT, [](int) { BackupScheduler::stop(); std::exit(0); });
-    std::signal(SIGTERM, [](int) { BackupScheduler::stop(); std::exit(0); });
-    
-    while (BackupScheduler::isRunning()) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    
-    Logger::shutdown();
-    return 0;
-  } else {
-    std::cerr << "Unknown backup command: " << command << std::endl;
-    return 1;
-  }
-}
 
 int handleDBTCommand(int argc, char* argv[]) {
   if (argc < 3) {
@@ -985,10 +904,6 @@ int handleMaintenanceCommand() {
 }
 
 int main(int argc, char* argv[]) {
-  if (argc > 1 && std::string(argv[1]) == "backup") {
-    return handleBackupCommand(argc, argv);
-  }
-  
   if (argc > 1 && (std::string(argv[1]) == "--execute-dbt-model" || 
                    std::string(argv[1]) == "--run-dbt-tests" || 
                    std::string(argv[1]) == "--compile-dbt-model")) {

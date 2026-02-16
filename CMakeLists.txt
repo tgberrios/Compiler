@@ -259,7 +259,6 @@ include_directories(
     ./include/core
     ./include/governance
     ./include/metrics
-    ./include/backup
     ./include/transformations
     ./include/third_party
     /usr/local/include
@@ -349,8 +348,6 @@ add_executable(DataSync
     src/storage/ColumnarStorage.cpp
     src/storage/ColumnarReader.cpp
     src/storage/ColumnarWriter.cpp
-    src/backup/backup_manager.cpp
-    src/backup/backup_scheduler.cpp
     src/transformations/transformation_engine.cpp
     src/transformations/lookup_transformation.cpp
     src/transformations/aggregate_transformation.cpp

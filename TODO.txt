@@ -130,3 +130,11 @@ oracle esta bugueado
 - Webhooks para alertas (full en DB o integrar en monitor).
 - RPG (nota)
 - Pokepath (nota)
+
+
+
+sera mejor hacer mi propio digamos monitor o usar grafana ?
+
+mejorar mi fastfetch
+
+arrglar mi notion
