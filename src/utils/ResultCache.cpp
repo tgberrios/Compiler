@@ -5,6 +5,10 @@
 #include <cstring>
 #include <functional>
 
+namespace {
+constexpr char CACHE_KEY_SEP = '\x1E';
+}
+
 // Simple SHA256 implementation (fallback si OpenSSL no está disponible)
 namespace {
   std::string simpleHash(const std::string& input) {
@@ -46,7 +50,8 @@ void ResultCache::invalidateTable(const std::string& connectionString,
                                    const std::string& dbEngine,
                                    const std::string& schema,
                                    const std::string& table) {
-  std::string tableKey = connectionString + ":" + dbEngine + ":" + schema + ":" + table;
+  std::string tableKey = connectionString + CACHE_KEY_SEP + dbEngine + CACHE_KEY_SEP +
+                         schema + CACHE_KEY_SEP + table;
   
   auto it = tableToKeys_.find(tableKey);
   if (it == tableToKeys_.end()) {
@@ -98,11 +103,11 @@ ResultCache::QueryKey ResultCache::createKey(const std::string& connectionString
 }
 
 std::string ResultCache::keyToString(const QueryKey& key) const {
-  return key.queryHash + ":" + key.connectionString + ":" + 
-         key.dbEngine + ":" + key.schema + ":" + key.table;
+  return key.queryHash + CACHE_KEY_SEP + key.connectionString + CACHE_KEY_SEP +
+         key.dbEngine + CACHE_KEY_SEP + key.schema + CACHE_KEY_SEP + key.table;
 }
 
 std::string ResultCache::extractTableKey(const QueryKey& key) const {
-  return key.connectionString + ":" + key.dbEngine + ":" + 
-         key.schema + ":" + key.table;
+  return key.connectionString + CACHE_KEY_SEP + key.dbEngine + CACHE_KEY_SEP +
+         key.schema + CACHE_KEY_SEP + key.table;
 }

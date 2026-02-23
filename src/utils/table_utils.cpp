@@ -36,7 +36,8 @@ bool TableUtils::tableExistsInPostgres(pqxx::connection &conn,
                         "WHERE table_schema = $1 AND table_name = $2"),
                         params);
 
-    bool exists = !result.empty() && result[0][0].as<int>() > 0;
+    bool exists = !result.empty() && !result[0][0].is_null() &&
+                  result[0][0].as<int>() > 0;
     txn.commit();
 
     return exists;

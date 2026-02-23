@@ -5,12 +5,11 @@
 // semicolon-separated format like
 // "host=server;user=user;password=pass;db=database;port=3306". Supports both
 // lowercase and uppercase keys (e.g., "host" or "SERVER", "db" or "DATABASE").
-// Trims whitespace from keys and values. Extracts host, user, password,
-// database (db/DATABASE), and port. Validates that host, user, and database are
-// not empty before returning. Returns std::nullopt if required parameters are
-// missing. Port defaults to DEFAULT_MYSQL_PORT if not specified. This parser
-// handles common connection string formats used across different database
-// engines.
+// Duplicate keys use last value wins. Trims whitespace from keys and values.
+// Extracts host, user, password, database (db/DATABASE), and port. Validates
+// that host, user, and database are not empty before returning. Returns
+// std::nullopt if required parameters are missing. Port defaults to
+// DEFAULT_MYSQL_PORT if not specified.
 std::optional<ConnectionParams>
 ConnectionStringParser::parse(std::string_view connStr) {
   if (connStr.empty()) {

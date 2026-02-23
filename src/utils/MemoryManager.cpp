@@ -39,6 +39,7 @@ void* MemoryManager::allocate(size_t size, const std::string& context) {
   // Verificar límites
   if (limit_.maxMemory > 0 && stats_.currentUsage + size > limit_.maxMemory) {
     if (limit_.enableSpill) {
+      // Log only; allocation still attempted. Caller is responsible for spilling.
       Logger::warning(LogCategory::SYSTEM, "MemoryManager",
                       "Memory limit reached, spill to disk required");
     } else {
@@ -191,7 +192,14 @@ std::unique_ptr<char[]> MemoryManager::loadFromDisk(const std::string& filePath,
       return nullptr;
     }
 
-    size = file.tellg();
+    std::streamsize sizeVal = file.tellg();
+    if (sizeVal <= 0) {
+      Logger::error(LogCategory::SYSTEM, "MemoryManager",
+                    "Invalid or empty spill file: " + filePath);
+      size = 0;
+      return nullptr;
+    }
+    size = static_cast<size_t>(sizeVal);
     file.seekg(0, std::ios::beg);
 
     auto buffer = std::make_unique<char[]>(size);
@@ -361,10 +369,9 @@ void* MemoryManager::MemoryPool::acquire() {
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (pool_.empty()) {
-    // Crear nuevo bloque
+    // Crear nuevo bloque (no se añade al pool; se entrega al caller)
     void* block = std::malloc(blockSize_);
     if (block) {
-      availableBlocks_++;
       return block;
     }
     return nullptr;

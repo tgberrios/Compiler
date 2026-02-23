@@ -1,5 +1,6 @@
 #include "utils/engine_factory.h"
 #include "core/logger.h"
+#include "utils/string_utils.h"
 #include "engines/mariadb_engine.h"
 #include "engines/mongodb_engine.h"
 #include "engines/mssql_engine.h"
@@ -17,31 +18,32 @@
 namespace EngineFactory {
 std::unique_ptr<IDatabaseEngine>
 createEngine(const std::string &dbEngine, const std::string &connectionString) {
-  if (dbEngine == "MariaDB")
+  std::string normalized = StringUtils::toLower(dbEngine);
+  if (normalized == "mariadb")
     return std::make_unique<MariaDBEngine>(connectionString);
-  else if (dbEngine == "MSSQL")
+  else if (normalized == "mssql")
     return std::make_unique<MSSQLEngine>(connectionString);
-  else if (dbEngine == "PostgreSQL")
+  else if (normalized == "postgresql")
     return std::make_unique<PostgreSQLEngine>(connectionString);
-  else if (dbEngine == "MongoDB")
+  else if (normalized == "mongodb")
     return std::make_unique<MongoDBEngine>(connectionString);
-  else if (dbEngine == "Oracle")
+  else if (normalized == "oracle")
     return std::make_unique<OracleEngine>(connectionString);
-  else if (dbEngine == "Salesforce")
+  else if (normalized == "salesforce")
     return std::make_unique<SalesforceEngine>(connectionString);
-  else if (dbEngine == "SAP")
+  else if (normalized == "sap")
     return std::make_unique<SAPEngine>(connectionString);
-  else if (dbEngine == "Teradata")
+  else if (normalized == "teradata")
     return std::make_unique<TeradataEngine>(connectionString);
-  else if (dbEngine == "Netezza")
+  else if (normalized == "netezza")
     return std::make_unique<NetezzaEngine>(connectionString);
-  else if (dbEngine == "Hive")
+  else if (normalized == "hive")
     return std::make_unique<HiveEngine>(connectionString);
-  else if (dbEngine == "Cassandra")
+  else if (normalized == "cassandra")
     return std::make_unique<CassandraEngine>(connectionString);
-  else if (dbEngine == "DynamoDB")
+  else if (normalized == "dynamodb")
     return std::make_unique<DynamoDBEngine>(connectionString);
-  else if (dbEngine == "AS400")
+  else if (normalized == "as400")
     return std::make_unique<AS400Engine>(connectionString);
   else {
     Logger::warning(LogCategory::DATABASE, "EngineFactory",

@@ -17,6 +17,7 @@ struct ConnectionParams {
   ConnectionParams()
       : port(std::to_string(DatabaseDefaults::DEFAULT_MYSQL_PORT)) {}
 
+  /** For display/logging only; not safe to re-parse if host/user/db contain ';' or '='. */
   std::string toSafeString() const {
     return "host=" + host + ";user=" + user + ";password=***;db=" + db +
            ";port=" + port;

@@ -19,9 +19,19 @@ std::optional<std::vector<std::string>> MetadataCache::getSchemas(
     return std::nullopt;
   }
 
+  const json& val = result.value();
+  if (!val.is_array()) {
+    return std::nullopt;
+  }
   std::vector<std::string> schemas;
-  for (const auto& schema : result.value()) {
-    schemas.push_back(schema.get<std::string>());
+  try {
+    for (const auto& schema : val) {
+      if (schema.is_string()) {
+        schemas.push_back(schema.get<std::string>());
+      }
+    }
+  } catch (const std::exception&) {
+    return std::nullopt;
   }
   return schemas;
 }
@@ -48,9 +58,19 @@ std::optional<std::vector<std::string>> MetadataCache::getTables(
     return std::nullopt;
   }
 
+  const json& val = result.value();
+  if (!val.is_array()) {
+    return std::nullopt;
+  }
   std::vector<std::string> tables;
-  for (const auto& table : result.value()) {
-    tables.push_back(table.get<std::string>());
+  try {
+    for (const auto& table : val) {
+      if (table.is_string()) {
+        tables.push_back(table.get<std::string>());
+      }
+    }
+  } catch (const std::exception&) {
+    return std::nullopt;
   }
   return tables;
 }
@@ -80,32 +100,44 @@ std::optional<MetadataCache::TableInfo> MetadataCache::getTableInfo(
   }
 
   const json& data = result.value();
+  if (!data.is_object()) {
+    return std::nullopt;
+  }
   TableInfo info;
   info.schemaName = schemaName;
   info.tableName = tableName;
-  
-  if (data.contains("column_names")) {
-    for (const auto& col : data["column_names"]) {
-      info.columnNames.push_back(col.get<std::string>());
+
+  try {
+    if (data.contains("column_names") && data["column_names"].is_array()) {
+      for (const auto& col : data["column_names"]) {
+        if (col.is_string()) {
+          info.columnNames.push_back(col.get<std::string>());
+        }
+      }
     }
-  }
-  
-  if (data.contains("column_types")) {
-    for (const auto& col : data["column_types"]) {
-      info.columnTypes.push_back(col.get<std::string>());
+    if (data.contains("column_types") && data["column_types"].is_array()) {
+      for (const auto& col : data["column_types"]) {
+        if (col.is_string()) {
+          info.columnTypes.push_back(col.get<std::string>());
+        }
+      }
     }
-  }
-  
-  if (data.contains("primary_keys")) {
-    for (const auto& pk : data["primary_keys"]) {
-      info.primaryKeys.push_back(pk.get<std::string>());
+    if (data.contains("primary_keys") && data["primary_keys"].is_array()) {
+      for (const auto& pk : data["primary_keys"]) {
+        if (pk.is_string()) {
+          info.primaryKeys.push_back(pk.get<std::string>());
+        }
+      }
     }
-  }
-  
-  if (data.contains("foreign_keys")) {
-    for (const auto& fk : data["foreign_keys"]) {
-      info.foreignKeys.push_back(fk.get<std::string>());
+    if (data.contains("foreign_keys") && data["foreign_keys"].is_array()) {
+      for (const auto& fk : data["foreign_keys"]) {
+        if (fk.is_string()) {
+          info.foreignKeys.push_back(fk.get<std::string>());
+        }
+      }
     }
+  } catch (const std::exception&) {
+    return std::nullopt;
   }
 
   return info;

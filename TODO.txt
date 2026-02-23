@@ -130,3 +130,14 @@ sera mejor hacer mi propio digamos monitor o usar grafana ?
 mejorar mi fastfetch
 
 arrglar mi notion
+
+carpetas pendientes engines, governance, sync, transformations
+
+
+falta de aplicar storage
+
+
+monitoring estoy pensando en crear un producto diferente
+
+
+talvez mover todos los charts y la observabilidad a grafana ? no c 

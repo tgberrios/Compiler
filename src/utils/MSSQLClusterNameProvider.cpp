@@ -3,6 +3,7 @@
 #include "core/logger.h"
 #include "engines/mssql_engine.h"
 #include "utils/string_utils.h"
+#include <algorithm>
 #include <sql.h>
 #include <sqlext.h>
 
@@ -27,8 +28,10 @@ std::string fetchMSSQLName(SQLHSTMT stmt, const char *query) {
     return "";
   }
 
-  if (len > 0 && len < static_cast<SQLLEN>(sizeof(buffer))) {
-    return std::string(buffer, len);
+  if (len > 0) {
+    size_t copyLen = std::min(static_cast<size_t>(len),
+                              sizeof(buffer) - 1);
+    return std::string(buffer, copyLen);
   }
 
   return "";

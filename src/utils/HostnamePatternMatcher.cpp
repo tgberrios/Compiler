@@ -1,6 +1,7 @@
 #include "utils/HostnamePatternMatcher.h"
 #include "utils/string_utils.h"
 #include <cstring>
+#include <iterator>
 
 std::string
 HostnamePatternMatcher::deriveClusterName(const std::string &hostname) {
@@ -15,15 +16,15 @@ HostnamePatternMatcher::deriveClusterName(const std::string &hostname) {
   static constexpr const char *TEST_PATTERNS[] = {"test", "testing"};
   static constexpr const char *LOCAL_PATTERNS[] = {"local", "localhost"};
 
-  if (matchesPattern(lower, PROD_PATTERNS, 2))
+  if (matchesPattern(lower, PROD_PATTERNS, std::size(PROD_PATTERNS)))
     return "PRODUCTION";
-  if (matchesPattern(lower, STAGING_PATTERNS, 2))
+  if (matchesPattern(lower, STAGING_PATTERNS, std::size(STAGING_PATTERNS)))
     return "STAGING";
-  if (matchesPattern(lower, DEV_PATTERNS, 2))
+  if (matchesPattern(lower, DEV_PATTERNS, std::size(DEV_PATTERNS)))
     return "DEVELOPMENT";
-  if (matchesPattern(lower, TEST_PATTERNS, 2))
+  if (matchesPattern(lower, TEST_PATTERNS, std::size(TEST_PATTERNS)))
     return "TESTING";
-  if (matchesPattern(lower, LOCAL_PATTERNS, 2))
+  if (matchesPattern(lower, LOCAL_PATTERNS, std::size(LOCAL_PATTERNS)))
     return "LOCAL";
 
   if (lower.find("uat") != std::string::npos)

@@ -124,6 +124,7 @@ inline std::string escapeMSSQLIdentifier(const std::string &identifier) {
     throw std::invalid_argument("Identifier cannot be empty");
   }
 
+  // Reject identifiers that already contain brackets (caller must pass unescaped).
   if (identifier.find('[') != std::string::npos ||
       identifier.find(']') != std::string::npos) {
     throw std::invalid_argument(
@@ -135,13 +136,7 @@ inline std::string escapeMSSQLIdentifier(const std::string &identifier) {
     throw std::invalid_argument("Invalid database identifier: " + identifier);
   }
 
-  std::string escaped = identifier;
-  size_t pos = 0;
-  while ((pos = escaped.find(']', pos)) != std::string::npos) {
-    escaped.replace(pos, 1, "]]");
-    pos += 2;
-  }
-  return "[" + escaped + "]";
+  return "[" + identifier + "]";
 }
 
 /** Returns a copy of connStr safe for logging: masks password=..., pwd=..., and truncates. */
