@@ -4,6 +4,8 @@
 #include "engines/mongodb_engine.h"
 #include "engines/oracle_engine.h"
 #include "engines/postgres_engine.h"
+#include "utils/connection_utils.h"
+#include "utils/string_utils.h"
 #include "utils/table_utils.h"
 #include <algorithm>
 #include <set>
@@ -114,11 +116,11 @@ void CatalogCleaner::cleanNonExistentMongoDBTables() {
     auto connStrings = repo_->getConnectionStrings("MongoDB");
 
     for (const auto &connStr : connStrings) {
-      if (connStr.empty() || 
-          (connStr.find("mongodb://") != 0 && connStr.find("mongodb+srv://") != 0)) {
+      if (!isMongoConnectionStringValid(connStr)) {
         Logger::warning(LogCategory::DATABASE, "CatalogCleaner",
-                       "Invalid MongoDB connection string format: " +
-                       connStr.substr(0, 50) + "... Skipping cleanup.");
+                       "Invalid MongoDB connection string: " +
+                       StringUtils::sanitizeConnectionStringForLog(connStr, 50) +
+                       ". Skipping cleanup.");
         continue;
       }
 
@@ -132,14 +134,15 @@ void CatalogCleaner::cleanNonExistentMongoDBTables() {
           } catch (const std::exception &e) {
             Logger::warning(LogCategory::DATABASE, "CatalogCleaner",
                            "Failed to discover all MongoDB databases for connection: " +
-                           connStr.substr(0, 50) + "... Error: " + std::string(e.what()) +
+                           StringUtils::sanitizeConnectionStringForLog(connStr, 50) + ". Error: " + std::string(e.what()) +
                            ". Skipping cleanup for this connection to prevent data loss.");
             continue;
           }
         } else {
           Logger::warning(LogCategory::DATABASE, "CatalogCleaner",
                          "MongoDB engine invalid for connection: " +
-                         connStr.substr(0, 50) + "... Skipping cleanup to prevent data loss.");
+                         StringUtils::sanitizeConnectionStringForLog(connStr, 50) +
+                         ". Skipping cleanup to prevent data loss.");
           continue;
         }
 

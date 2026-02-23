@@ -281,12 +281,12 @@ std::vector<DataLakeMappingManager::Mapping> DataLakeMappingManager::listMapping
     pqxx::result result;
     if (params.empty()) {
       result = txn.exec(query);
-    } else if (params.size() == 1) {
-      result = txn.exec_params(query, params[0]);
-    } else if (params.size() == 2) {
-      result = txn.exec_params(query, params[0], params[1]);
     } else {
-      result = txn.exec(query); // Fallback
+      pqxx::params p;
+      for (const auto& param : params) {
+        p.append(param);
+      }
+      result = txn.exec(pqxx::zview(query), p);
     }
 
     for (const auto& row : result) {

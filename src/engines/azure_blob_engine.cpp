@@ -64,7 +64,10 @@ std::string AzureBlobEngine::generateAzureSignature(const std::string &method, c
   // Simplified Azure Storage signature generation
   // For production, use proper Azure Storage REST API authentication
   // Extract path from URL
-  size_t pathStart = url.find("/", url.find("://") + 3);
+  size_t protocolPos = url.find("://");
+  size_t pathStart = (protocolPos != std::string::npos)
+                         ? url.find("/", protocolPos + 3)
+                         : std::string::npos;
   std::string canonicalizedResource = pathStart != std::string::npos ? url.substr(pathStart) : "/";
   
   std::string stringToSign = method + "\n\n\n" + date + "\n/" + config_.account_name + canonicalizedResource;

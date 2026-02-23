@@ -4,6 +4,8 @@
 #include "engines/database_engine.h"
 #include "sync/SchemaSync.h"
 #include "third_party/json.hpp"
+#include "utils/connection_utils.h"
+#include "utils/string_utils.h"
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -170,7 +172,7 @@ MongoDBToPostgres::discoverCollectionFields(const std::string &connectionString,
        connectionString.find("mongodb+srv://") != 0)) {
     Logger::error(LogCategory::TRANSFER, "discoverCollectionFields",
                   "Invalid MongoDB connection string format: " +
-                  connectionString.substr(0, 50) + "...");
+                  StringUtils::sanitizeConnectionStringForLog(connectionString, 50));
     return fields;
   }
 
@@ -179,7 +181,7 @@ MongoDBToPostgres::discoverCollectionFields(const std::string &connectionString,
     if (!engine.isValid()) {
       Logger::error(LogCategory::TRANSFER, "discoverCollectionFields",
                     "Failed to connect to MongoDB with connection string: " +
-                    connectionString.substr(0, 50) + "...");
+                    StringUtils::sanitizeConnectionStringForLog(connectionString, 50));
       return fields;
     }
 
@@ -1143,46 +1145,11 @@ void MongoDBToPostgres::setupTableTargetMongoDBToPostgres() {
       std::string tableName = row[1].as<std::string>();
       std::string connectionString = row[2].as<std::string>();
 
-      if (connectionString.empty() || 
-          (connectionString.find("mongodb://") != 0 && 
-           connectionString.find("mongodb+srv://") != 0)) {
+      if (!isMongoConnectionStringValid(connectionString)) {
         Logger::warning(LogCategory::TRANSFER, "setupTableTargetMongoDBToPostgres",
                        "Skipping table " + schemaName + "." + tableName + 
-                       " due to invalid connection string format: " +
-                       connectionString.substr(0, 50) + "...");
-        continue;
-      }
-
-      size_t protocolEnd = connectionString.find("://") + 3;
-      if (protocolEnd == std::string::npos || protocolEnd >= connectionString.length()) {
-        Logger::warning(LogCategory::TRANSFER, "setupTableTargetMongoDBToPostgres",
-                       "Skipping table " + schemaName + "." + tableName + 
-                       " due to invalid connection string (no protocol): " +
-                       connectionString.substr(0, 50) + "...");
-        continue;
-      }
-
-      size_t atPos = connectionString.find('@', protocolEnd);
-      size_t colonPos = connectionString.find(':', protocolEnd);
-      size_t slashPos = connectionString.find('/', protocolEnd);
-      
-      bool hasHost = false;
-      if (atPos != std::string::npos) {
-        hasHost = (atPos > protocolEnd);
-      } else if (colonPos != std::string::npos && 
-                 (slashPos == std::string::npos || colonPos < slashPos)) {
-        hasHost = (colonPos > protocolEnd);
-      } else if (slashPos != std::string::npos) {
-        hasHost = (slashPos > protocolEnd);
-      } else {
-        hasHost = (connectionString.length() > protocolEnd);
-      }
-      
-      if (!hasHost) {
-        Logger::warning(LogCategory::TRANSFER, "setupTableTargetMongoDBToPostgres",
-                       "Skipping table " + schemaName + "." + tableName + 
-                       " due to invalid connection string (no host): " +
-                       connectionString.substr(0, 50) + "...");
+                       " due to invalid MongoDB connection string: " +
+                       StringUtils::sanitizeConnectionStringForLog(connectionString, 50));
         continue;
       }
 
@@ -1192,8 +1159,9 @@ void MongoDBToPostgres::setupTableTargetMongoDBToPostgres() {
       if (fields.empty() || (fields.size() == 1 && fields[0] == "_id")) {
         Logger::warning(LogCategory::TRANSFER, "setupTableTargetMongoDBToPostgres",
                        "No fields discovered for " + schemaName + "." + tableName + 
-                       " with connection string: " + connectionString.substr(0, 50) + 
-                       "... Skipping table creation.");
+                       " with connection string: " +
+                       StringUtils::sanitizeConnectionStringForLog(connectionString, 50) +
+                       ". Skipping table creation.");
         continue;
       }
 

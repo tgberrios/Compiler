@@ -33,9 +33,7 @@ std::vector<APICatalogEntry> CSVCatalogRepository::getActiveAPIs() {
   return entries;
 }
 
-APICatalogEntry CSVCatalogRepository::getAPIEntry(const std::string &csvName) {
-  APICatalogEntry entry;
-  entry.api_name = "";
+std::optional<APICatalogEntry> CSVCatalogRepository::getAPIEntry(const std::string &csvName) {
   try {
     auto conn = getConnection();
     pqxx::work txn(conn);
@@ -48,18 +46,21 @@ APICatalogEntry CSVCatalogRepository::getAPIEntry(const std::string &csvName) {
         "FROM metadata.csv_catalog WHERE csv_name = $1",
         csvName);
 
-    if (!results.empty()) {
-      entry = rowToEntry(results[0]);
+    if (results.empty()) {
+      txn.commit();
+      return std::nullopt;
     }
+    auto entry = rowToEntry(results[0]);
     txn.commit();
+    return entry;
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE, "CSVCatalogRepository::getAPIEntry",
                   "Error getting CSV entry: " + std::string(e.what()));
+    return std::nullopt;
   }
-  return entry;
 }
 
-void CSVCatalogRepository::updateSyncStatus(const std::string &csvName,
+bool CSVCatalogRepository::updateSyncStatus(const std::string &csvName,
                                             const std::string &status,
                                             const std::string &lastSyncTime) {
   try {
@@ -70,10 +71,12 @@ void CSVCatalogRepository::updateSyncStatus(const std::string &csvName,
                     "updated_at = NOW() WHERE csv_name = $3",
                     status, lastSyncTime, csvName);
     txn.commit();
+    return true;
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE,
                   "CSVCatalogRepository::updateSyncStatus",
                   "Error updating CSV sync status: " + std::string(e.what()));
+    return false;
   }
 }
 

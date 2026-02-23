@@ -3,6 +3,7 @@
 
 #include "third_party/json.hpp"
 #include <pqxx/pqxx>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,8 +40,8 @@ public:
   explicit APICatalogRepository(std::string connectionString);
 
   std::vector<APICatalogEntry> getActiveAPIs();
-  APICatalogEntry getAPIEntry(const std::string &apiName);
-  void updateSyncStatus(const std::string &apiName, const std::string &status,
+  std::optional<APICatalogEntry> getAPIEntry(const std::string &apiName);
+  bool updateSyncStatus(const std::string &apiName, const std::string &status,
                         const std::string &lastSyncTime);
   void insertOrUpdateAPI(const APICatalogEntry &entry);
 

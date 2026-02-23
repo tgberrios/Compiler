@@ -110,6 +110,9 @@ void CatalogManager::updateClusterNames() {
 // This will validate that the schema in the source database matches the schema
 // in the metadata catalog. If there is a mismatch, the table will be reset to
 // trigger a full reload.
+// Only MariaDB, MSSQL, and PostgreSQL are validated. Oracle and MongoDB are
+// not validated (getColumnCounts is not called for them); their entries are
+// left unchanged.
 // NOTE: Schema and table names are stored in the catalog with their original
 // case (as returned by discoverTables()). The getColumnCounts() function
 // handles case conversion appropriately for each engine:
@@ -617,45 +620,10 @@ void CatalogManager::syncCatalog(const std::string &dbEngine) {
         engine = std::make_unique<PostgreSQLEngine>(connStr);
       else if (dbEngine == "MongoDB") {
         auto mongoEngine = std::make_unique<MongoDBEngine>(connStr);
-        // #region agent log
-        std::ofstream logFile("/home/iks/OneDrive/DataSync/.cursor/debug.log",
-                              std::ios::app);
-        json logEntry = {
-            {"sessionId", "debug-session"},
-            {"runId", "run1"},
-            {"hypothesisId", "H3"},
-            {"location", "catalog_manager.cpp:605"},
-            {"message", "MongoDB engine created"},
-            {"data",
-             {{"isValid", mongoEngine ? mongoEngine->isValid() : false}}},
-            {"timestamp",
-             std::chrono::duration_cast<std::chrono::milliseconds>(
-                 std::chrono::system_clock::now().time_since_epoch())
-                 .count()}};
-        logFile << logEntry.dump() << "\n";
-        logFile.close();
-        // #endregion
         if (mongoEngine && mongoEngine->isValid()) {
           std::vector<CatalogTableInfo> allTables;
           try {
             allTables = mongoEngine->discoverAllDatabasesAndCollections();
-            // #region agent log
-            logFile.open("/home/iks/OneDrive/DataSync/.cursor/debug.log",
-                         std::ios::app);
-            logEntry = {
-                {"sessionId", "debug-session"},
-                {"runId", "run1"},
-                {"hypothesisId", "H3"},
-                {"location", "catalog_manager.cpp:612"},
-                {"message", "MongoDB discovered tables"},
-                {"data", {{"tableCount", allTables.size()}}},
-                {"timestamp",
-                 std::chrono::duration_cast<std::chrono::milliseconds>(
-                     std::chrono::system_clock::now().time_since_epoch())
-                     .count()}};
-            logFile << logEntry.dump() << "\n";
-            logFile.close();
-            // #endregion
             for (const auto &table : allTables) {
               auto pkColumns =
                   mongoEngine->detectPrimaryKey(table.schema, table.table);
@@ -678,23 +646,6 @@ void CatalogManager::syncCatalog(const std::string &dbEngine) {
           }
           continue;
         } else {
-          // #region agent log
-          logFile.open("/home/iks/OneDrive/DataSync/.cursor/debug.log",
-                       std::ios::app);
-          logEntry = {{"sessionId", "debug-session"},
-                      {"runId", "run1"},
-                      {"hypothesisId", "H3"},
-                      {"location", "catalog_manager.cpp:632"},
-                      {"message",
-                       "MongoDB engine invalid, using discoverTables fallback"},
-                      {"data", {}},
-                      {"timestamp",
-                       std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::system_clock::now().time_since_epoch())
-                           .count()}};
-          logFile << logEntry.dump() << "\n";
-          logFile.close();
-          // #endregion
           if (mongoEngine) {
             engine = std::move(mongoEngine);
           }

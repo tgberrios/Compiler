@@ -38,11 +38,11 @@ public:
   // Inicializar tablas si no existen
   static void initializeTables(pqxx::connection& conn);
 
+  // Hash for cache key (shared with MetadataRepository for invalidation)
+  static std::string hashKey(const std::string& key);
+
 private:
   pqxx::connection& conn_;
-
-  // Generar key hash
-  std::string hashKey(const std::string& key) const;
 };
 
 #endif // METADATA_CACHE_REPOSITORY_H

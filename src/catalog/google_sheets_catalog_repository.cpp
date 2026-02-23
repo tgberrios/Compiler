@@ -34,10 +34,8 @@ std::vector<APICatalogEntry> GoogleSheetsCatalogRepository::getActiveAPIs() {
   return entries;
 }
 
-APICatalogEntry
+std::optional<APICatalogEntry>
 GoogleSheetsCatalogRepository::getAPIEntry(const std::string &sheetName) {
-  APICatalogEntry entry;
-  entry.api_name = "";
   try {
     auto conn = getConnection();
     pqxx::work txn(conn);
@@ -49,19 +47,22 @@ GoogleSheetsCatalogRepository::getAPIEntry(const std::string &sheetName) {
         "FROM metadata.google_sheets_catalog WHERE sheet_name = $1",
         sheetName);
 
-    if (!results.empty()) {
-      entry = rowToEntry(results[0]);
+    if (results.empty()) {
+      txn.commit();
+      return std::nullopt;
     }
+    auto entry = rowToEntry(results[0]);
     txn.commit();
+    return entry;
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE,
                   "GoogleSheetsCatalogRepository::getAPIEntry",
                   "Error getting Google Sheet entry: " + std::string(e.what()));
+    return std::nullopt;
   }
-  return entry;
 }
 
-void GoogleSheetsCatalogRepository::updateSyncStatus(
+bool GoogleSheetsCatalogRepository::updateSyncStatus(
     const std::string &sheetName, const std::string &status,
     const std::string &lastSyncTime) {
   try {
@@ -72,11 +73,13 @@ void GoogleSheetsCatalogRepository::updateSyncStatus(
                     "updated_at = NOW() WHERE sheet_name = $3",
                     status, lastSyncTime, sheetName);
     txn.commit();
+    return true;
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE,
                   "GoogleSheetsCatalogRepository::updateSyncStatus",
                   "Error updating Google Sheet sync status: " +
                       std::string(e.what()));
+    return false;
   }
 }
 

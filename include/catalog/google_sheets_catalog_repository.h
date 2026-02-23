@@ -4,6 +4,7 @@
 #include "catalog/api_catalog_repository.h"
 #include "third_party/json.hpp"
 #include <pqxx/pqxx>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,8 +17,8 @@ public:
   explicit GoogleSheetsCatalogRepository(std::string connectionString);
 
   std::vector<APICatalogEntry> getActiveAPIs();
-  APICatalogEntry getAPIEntry(const std::string &sheetName);
-  void updateSyncStatus(const std::string &sheetName, const std::string &status,
+  std::optional<APICatalogEntry> getAPIEntry(const std::string &sheetName);
+  bool updateSyncStatus(const std::string &sheetName, const std::string &status,
                         const std::string &lastSyncTime);
 
 private:

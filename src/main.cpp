@@ -15,6 +15,7 @@
 #include "monitoring/AdvancedAlertingManager.h"
 #include "monitoring/QueryPerformanceAnalyzer.h"
 #include "catalog/DataLakeMappingManager.h"
+#include "catalog/WorkflowVersionManager.h"
 #include "maintenance/CDCCleanupManager.h"
 #include "catalog/UnusedObjectsDetector.h"
 #include "third_party/json.hpp"
@@ -779,6 +780,31 @@ int handleCatalogCommand() {
         output["unused_objects"].push_back(objJson);
       }
       
+    } else if (operation == "workflow_list_versions") {
+      auto& vm = WorkflowVersionManager::getInstance();
+      std::string workflowName = request["workflow_name"];
+      auto versions = vm.getVersions(workflowName);
+      output["success"] = true;
+      output["versions"] = nlohmann::json::array();
+      for (const auto& v : versions) {
+        nlohmann::json vj;
+        vj["version"] = v.version;
+        vj["workflow_name"] = v.workflow_name;
+        vj["description"] = v.description;
+        vj["created_at"] = v.created_at;
+        vj["created_by"] = v.created_by;
+        vj["is_current"] = v.is_current;
+        output["versions"].push_back(vj);
+      }
+    } else if (operation == "workflow_restore_version") {
+      auto& vm = WorkflowVersionManager::getInstance();
+      std::string workflowName = request["workflow_name"];
+      int version = request["version"];
+      bool ok = vm.restoreVersion(workflowName, version);
+      output["success"] = ok;
+      if (!ok) {
+        output["error"] = "Restore failed (workflow or version not found)";
+      }
     } else {
       output["success"] = false;
       output["error"] = "Unknown operation: " + operation;

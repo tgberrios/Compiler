@@ -74,14 +74,14 @@ void APIToDatabaseSync::syncAllAPIs() {
 
 void APIToDatabaseSync::syncAPIToDatabase(const std::string &apiName) {
   try {
-    APICatalogEntry entry = apiRepo_->getAPIEntry(apiName);
-    if (entry.api_name.empty()) {
+    auto entryOpt = apiRepo_->getAPIEntry(apiName);
+    if (!entryOpt) {
       Logger::error(LogCategory::TRANSFER, "syncAPIToDatabase",
                     "API not found: " + apiName);
       return;
     }
 
-    processAPIFullLoad(entry);
+    processAPIFullLoad(*entryOpt);
   } catch (const std::exception &e) {
     Logger::error(LogCategory::TRANSFER, "syncAPIToDatabase",
                   "Error syncing API " + apiName + ": " +

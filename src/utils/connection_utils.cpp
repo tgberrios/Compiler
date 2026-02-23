@@ -88,3 +88,32 @@ std::string ConnectionStringParser::trim(const std::string &str) {
   size_t end = str.find_last_not_of(" \t\r\n");
   return str.substr(start, end - start + 1);
 }
+
+bool isMongoConnectionStringValid(const std::string& connStr) {
+  if (connStr.empty() ||
+      (connStr.find("mongodb://") != 0 && connStr.find("mongodb+srv://") != 0)) {
+    return false;
+  }
+  size_t protocolPos = connStr.find("://");
+  if (protocolPos == std::string::npos) {
+    return false;
+  }
+  size_t protocolEnd = protocolPos + 3;
+  if (protocolEnd >= connStr.length()) {
+    return false;
+  }
+  size_t atPos = connStr.find('@', protocolEnd);
+  size_t colonPos = connStr.find(':', protocolEnd);
+  size_t slashPos = connStr.find('/', protocolEnd);
+  if (atPos != std::string::npos) {
+    return atPos > protocolEnd;
+  }
+  if (colonPos != std::string::npos &&
+      (slashPos == std::string::npos || colonPos < slashPos)) {
+    return colonPos > protocolEnd;
+  }
+  if (slashPos != std::string::npos) {
+    return slashPos > protocolEnd;
+  }
+  return connStr.length() > protocolEnd;
+}

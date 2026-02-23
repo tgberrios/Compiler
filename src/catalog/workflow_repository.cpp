@@ -1,4 +1,5 @@
 #include "catalog/workflow_repository.h"
+#include "catalog/WorkflowVersionManager.h"
 #include "core/logger.h"
 #include <algorithm>
 #include <stdexcept>
@@ -97,6 +98,17 @@ void WorkflowRepository::createTables() {
         "    created_at TIMESTAMP DEFAULT NOW(),"
         "    FOREIGN KEY (workflow_name, task_name) REFERENCES metadata.workflow_tasks(workflow_name, task_name) ON DELETE CASCADE"
         ");"
+        "CREATE TABLE IF NOT EXISTS metadata.workflow_versions ("
+        "    id SERIAL PRIMARY KEY,"
+        "    workflow_name VARCHAR(255) NOT NULL REFERENCES metadata.workflows(workflow_name) ON DELETE CASCADE,"
+        "    version INTEGER NOT NULL,"
+        "    description TEXT,"
+        "    created_by VARCHAR(255),"
+        "    is_current BOOLEAN DEFAULT false,"
+        "    workflow_definition JSONB NOT NULL,"
+        "    created_at TIMESTAMP DEFAULT NOW(),"
+        "    CONSTRAINT uq_workflow_version UNIQUE (workflow_name, version)"
+        ");"
     );
     
     txn.exec(
@@ -109,6 +121,7 @@ void WorkflowRepository::createTables() {
         "CREATE INDEX IF NOT EXISTS idx_workflow_executions_status ON metadata.workflow_executions(status);"
         "CREATE INDEX IF NOT EXISTS idx_workflow_executions_start_time ON metadata.workflow_executions(start_time DESC);"
         "CREATE INDEX IF NOT EXISTS idx_workflow_task_executions_execution ON metadata.workflow_task_executions(workflow_execution_id);"
+        "CREATE INDEX IF NOT EXISTS idx_workflow_versions_workflow ON metadata.workflow_versions(workflow_name);"
     );
     
     txn.commit();
@@ -659,6 +672,15 @@ void WorkflowRepository::insertOrUpdateWorkflow(const WorkflowModel &workflow) {
     }
     
     txn.commit();
+
+    try {
+      WorkflowVersionManager::getInstance().createVersion(
+          workflow.workflow_name, "system", "Auto-save");
+    } catch (const std::exception &e) {
+      Logger::warning(LogCategory::DATABASE, "insertOrUpdateWorkflow",
+                      "Could not create workflow version (non-fatal): " +
+                          std::string(e.what()));
+    }
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE, "insertOrUpdateWorkflow",
                   "Error inserting/updating workflow: " + std::string(e.what()));

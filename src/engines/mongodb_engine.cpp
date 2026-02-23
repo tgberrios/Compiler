@@ -34,7 +34,13 @@ bool MongoDBEngine::parseConnectionString(const std::string &connectionString) {
     return false;
   }
 
-  size_t hostStart = connectionString.find("://") + 3;
+  size_t protocolPos = connectionString.find("://");
+  if (protocolPos == std::string::npos) {
+    Logger::error(LogCategory::DATABASE, "MongoDBEngine",
+                  "Invalid MongoDB connection string (no protocol)");
+    return false;
+  }
+  size_t hostStart = protocolPos + 3;
   size_t atPos = connectionString.find('@', hostStart);
   size_t colonPos = connectionString.find(':', hostStart);
   size_t slashPos = connectionString.find('/', hostStart);
@@ -316,8 +322,15 @@ std::string MongoDBEngine::getBaseConnectionString() const {
     return "";
   }
 
-  size_t protocolEnd = connectionString_.find("://") + 3;
-  if (protocolEnd == std::string::npos || protocolEnd >= connectionString_.length()) {
+  size_t protocolPos = connectionString_.find("://");
+  if (protocolPos == std::string::npos) {
+    Logger::error(LogCategory::DATABASE, "MongoDBEngine",
+                  "Invalid connection string (no protocol) in getBaseConnectionString: " +
+                  connectionString_.substr(0, 50) + "...");
+    return "";
+  }
+  size_t protocolEnd = protocolPos + 3;
+  if (protocolEnd >= connectionString_.length()) {
     Logger::error(LogCategory::DATABASE, "MongoDBEngine",
                   "Invalid connection string (no protocol end) in getBaseConnectionString: " +
                   connectionString_.substr(0, 50) + "...");

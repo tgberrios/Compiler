@@ -144,6 +144,38 @@ inline std::string escapeMSSQLIdentifier(const std::string &identifier) {
   return "[" + escaped + "]";
 }
 
+/** Returns a copy of connStr safe for logging: masks password=..., pwd=..., and truncates. */
+inline std::string sanitizeConnectionStringForLog(const std::string& connStr,
+                                                  size_t maxLen = 80) {
+  std::string out = connStr;
+  auto maskKey = [&out](std::string_view key) {
+    std::string keyStr(key);
+    size_t pos = 0;
+    while ((pos = out.find(keyStr, pos)) != std::string::npos) {
+      size_t valueStart = pos + keyStr.size();
+      size_t valueEnd = valueStart;
+      while (valueEnd < out.size() && out[valueEnd] != ';' && out[valueEnd] != '&' &&
+             out[valueEnd] != ' ' && out[valueEnd] != '@') {
+        ++valueEnd;
+      }
+      if (valueEnd > valueStart) {
+        out.replace(valueStart, valueEnd - valueStart, "***");
+        pos = valueStart + 3;
+      } else {
+        pos = valueEnd;
+      }
+    }
+  };
+  maskKey("password=");
+  maskKey("Password=");
+  maskKey("pwd=");
+  maskKey("PWD=");
+  if (out.size() > maxLen) {
+    out = out.substr(0, maxLen) + "...";
+  }
+  return out;
+}
+
 } // namespace StringUtils
 
 #endif

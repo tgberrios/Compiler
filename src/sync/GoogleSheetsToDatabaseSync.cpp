@@ -80,14 +80,14 @@ void GoogleSheetsToDatabaseSync::syncAllGoogleSheets() {
 void GoogleSheetsToDatabaseSync::syncGoogleSheetToDatabase(
     const std::string &sheetName) {
   try {
-    APICatalogEntry entry = sheetsRepo_->getAPIEntry(sheetName);
-    if (entry.api_name.empty()) {
+    auto entryOpt = sheetsRepo_->getAPIEntry(sheetName);
+    if (!entryOpt) {
       Logger::error(LogCategory::TRANSFER, "syncGoogleSheetToDatabase",
                     "Google Sheet not found: " + sheetName);
       return;
     }
 
-    processGoogleSheetFullLoad(entry);
+    processGoogleSheetFullLoad(*entryOpt);
   } catch (const std::exception &e) {
     Logger::error(LogCategory::TRANSFER, "syncGoogleSheetToDatabase",
                   "Error syncing Google Sheet " + sheetName + ": " +

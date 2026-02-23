@@ -31,4 +31,7 @@ private:
   static std::string trim(const std::string &str);
 };
 
+/** Returns true if connStr has mongodb:// or mongodb+srv:// and a valid host part. */
+bool isMongoConnectionStringValid(const std::string& connStr);
+
 #endif

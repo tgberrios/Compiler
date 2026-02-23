@@ -76,14 +76,14 @@ void CSVToDatabaseSync::syncAllCSVs() {
 
 void CSVToDatabaseSync::syncCSVToDatabase(const std::string &csvName) {
   try {
-    APICatalogEntry entry = csvRepo_->getAPIEntry(csvName);
-    if (entry.api_name.empty()) {
+    auto entryOpt = csvRepo_->getAPIEntry(csvName);
+    if (!entryOpt) {
       Logger::error(LogCategory::TRANSFER, "syncCSVToDatabase",
                     "CSV not found: " + csvName);
       return;
     }
 
-    processCSVFullLoad(entry);
+    processCSVFullLoad(*entryOpt);
   } catch (const std::exception &e) {
     Logger::error(LogCategory::TRANSFER, "syncCSVToDatabase",
                   "Error syncing CSV " + csvName + ": " +

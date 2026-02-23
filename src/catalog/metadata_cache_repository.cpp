@@ -167,8 +167,7 @@ void MetadataCacheRepository::initializeTables(pqxx::connection& conn) {
   }
 }
 
-std::string MetadataCacheRepository::hashKey(const std::string& key) const {
-  // Hash simple para usar como primary key
+std::string MetadataCacheRepository::hashKey(const std::string& key) {
   std::hash<std::string> hasher;
   size_t hash = hasher(key);
   std::stringstream ss;

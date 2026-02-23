@@ -1,11 +1,21 @@
 #include "catalog/metadata_repository.h"
+#include "catalog/metadata_cache_repository.h"
 #include "core/database_config.h"
 #include "core/logger.h"
 #include "engines/database_engine.h"
 #include "third_party/json.hpp"
+#include "utils/connection_utils.h"
 #include "utils/string_utils.h"
+#include <chrono>
+#include <functional>
+#include <sstream>
+#include <iomanip>
 
 using json = nlohmann::json;
+
+namespace {
+constexpr int METADATA_CACHE_TTL_MINUTES = 5;
+} // namespace
 
 // Constructor for MetadataRepository. Initializes the repository with a
 // connection string to the metadata database. This connection string is used
@@ -29,6 +39,8 @@ static std::vector<std::string> parseJSONArray(const std::string &jsonArray) {
       }
     }
   } catch (const std::exception &e) {
+    Logger::warning(LogCategory::DATABASE, "MetadataRepository",
+                    "Failed to parse JSON array: " + std::string(e.what()));
   }
   return result;
 }
@@ -42,9 +54,7 @@ pqxx::connection MetadataRepository::getConnection() {
 
 // Retrieves all distinct connection strings for a specific database engine
 // from the metadata catalog. Only returns connection strings for active tables.
-// This is useful for discovering all source database connections of a
-// particular type (MariaDB, MSSQL, PostgreSQL) that need to be processed.
-// Returns an empty vector if no connections are found or if an error occurs.
+// Results are cached for METADATA_CACHE_TTL_MINUTES to avoid repeated heavy queries.
 std::vector<std::string>
 MetadataRepository::getConnectionStrings(const std::string &dbEngine) {
   std::vector<std::string> connStrings;
@@ -55,6 +65,21 @@ MetadataRepository::getConnectionStrings(const std::string &dbEngine) {
   }
   try {
     auto conn = getConnection();
+    MetadataCacheRepository::initializeTables(conn);
+    MetadataCacheRepository cache(conn);
+    const std::string cacheKey = "conn_strs:" + dbEngine;
+    auto cached = cache.getCacheEntry(cacheKey);
+    if (cached && cached->is_array()) {
+      for (const auto& el : *cached) {
+        if (el.is_string())
+          connStrings.push_back(el.get<std::string>());
+      }
+      Logger::info(LogCategory::DATABASE, "MetadataRepository",
+                   "Connection strings for " + dbEngine + " from cache (" +
+                       std::to_string(connStrings.size()) + " entries)");
+      return connStrings;
+    }
+
     pqxx::work txn(conn);
     auto results = txn.exec_params(
         "SELECT DISTINCT connection_string FROM metadata.catalog "
@@ -62,68 +87,33 @@ MetadataRepository::getConnectionStrings(const std::string &dbEngine) {
         dbEngine);
     txn.commit();
 
-    Logger::info(LogCategory::DATABASE, "MetadataRepository",
-                 "Found " + std::to_string(results.size()) + 
-                 " distinct connection strings for " + dbEngine);
-
     for (const auto &row : results) {
       if (!row[0].is_null()) {
         std::string connStr = row[0].as<std::string>();
-        
-        Logger::info(LogCategory::DATABASE, "MetadataRepository",
-                     "Processing connection string: " + connStr.substr(0, 100) + 
-                     (connStr.length() > 100 ? "..." : ""));
-        
+
         if (dbEngine == "MongoDB") {
-          if (connStr.empty() || 
-              (connStr.find("mongodb://") != 0 && connStr.find("mongodb+srv://") != 0)) {
+          if (!isMongoConnectionStringValid(connStr)) {
             Logger::warning(LogCategory::DATABASE, "MetadataRepository",
-                           "Skipping invalid MongoDB connection string format: " +
-                           connStr.substr(0, 50) + "...");
-            continue;
-          }
-          
-          size_t protocolEnd = connStr.find("://") + 3;
-          if (protocolEnd == std::string::npos || protocolEnd >= connStr.length()) {
-            Logger::warning(LogCategory::DATABASE, "MetadataRepository",
-                           "Skipping invalid MongoDB connection string (no protocol): " +
-                           connStr.substr(0, 50) + "...");
-            continue;
-          }
-          
-          size_t atPos = connStr.find('@', protocolEnd);
-          size_t colonPos = connStr.find(':', protocolEnd);
-          size_t slashPos = connStr.find('/', protocolEnd);
-          
-          bool hasHost = false;
-          if (atPos != std::string::npos) {
-            hasHost = (atPos > protocolEnd);
-          } else if (colonPos != std::string::npos && 
-                     (slashPos == std::string::npos || colonPos < slashPos)) {
-            hasHost = (colonPos > protocolEnd);
-          } else if (slashPos != std::string::npos) {
-            hasHost = (slashPos > protocolEnd);
-          } else {
-            hasHost = (connStr.length() > protocolEnd);
-          }
-          
-          if (!hasHost) {
-            Logger::warning(LogCategory::DATABASE, "MetadataRepository",
-                           "Skipping invalid MongoDB connection string (no host): " +
-                           connStr.substr(0, 50) + "...");
+                           "Skipping invalid MongoDB connection string: " +
+                           StringUtils::sanitizeConnectionStringForLog(connStr, 50));
             continue;
           }
         }
-        
+
         connStrings.push_back(connStr);
-        Logger::info(LogCategory::DATABASE, "MetadataRepository",
-                     "Added valid connection string for " + dbEngine);
       }
     }
-    
+
+    json j = json::array();
+    for (const auto& s : connStrings)
+      j.push_back(s);
+    auto expiresAt = std::chrono::system_clock::now() +
+                     std::chrono::minutes(METADATA_CACHE_TTL_MINUTES);
+    cache.saveCacheEntry(cacheKey, j, expiresAt);
+
     Logger::info(LogCategory::DATABASE, "MetadataRepository",
-                 "Returning " + std::to_string(connStrings.size()) + 
-                 " valid connection strings for " + dbEngine);
+                 "Found " + std::to_string(connStrings.size()) +
+                 " distinct connection strings for " + dbEngine);
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE, "MetadataRepository",
                   "Error getting connection strings: " + std::string(e.what()));
@@ -132,11 +122,8 @@ MetadataRepository::getConnectionStrings(const std::string &dbEngine) {
 }
 
 // Retrieves all catalog entries for a specific database engine and connection
-// string combination. This function returns detailed metadata about each table
-// including schema name, table name, status, primary key information, and table
-// size. The entries are returned as CatalogEntry objects containing all
-// relevant metadata fields. Returns an empty vector if no entries are found
-// or if an error occurs.
+// string. Results are cached for METADATA_CACHE_TTL_MINUTES; cache is
+// invalidated on insertOrUpdateTable and deleteTable for the same engine/connection.
 std::vector<CatalogEntry>
 MetadataRepository::getCatalogEntries(const std::string &dbEngine,
                                       const std::string &connectionString) {
@@ -149,6 +136,29 @@ MetadataRepository::getCatalogEntries(const std::string &dbEngine,
   }
   try {
     auto conn = getConnection();
+    MetadataCacheRepository::initializeTables(conn);
+    MetadataCacheRepository cache(conn);
+    const std::string cacheKey =
+        "catalog_entries:" + dbEngine + ":" +
+                          MetadataCacheRepository::hashKey(connectionString);
+    auto cached = cache.getCacheEntry(cacheKey);
+    if (cached && cached->is_array()) {
+      for (const auto& el : *cached) {
+        CatalogEntry entry;
+        if (el.contains("schema")) entry.schema = el["schema"].get<std::string>();
+        if (el.contains("table")) entry.table = el["table"].get<std::string>();
+        if (el.contains("db_engine")) entry.dbEngine = el["db_engine"].get<std::string>();
+        if (el.contains("connection_string")) entry.connectionString = el["connection_string"].get<std::string>();
+        if (el.contains("status")) entry.status = el["status"].get<std::string>();
+        if (el.contains("pk_columns")) entry.pkColumns = el["pk_columns"].get<std::string>();
+        if (el.contains("pk_strategy")) entry.pkStrategy = el["pk_strategy"].get<std::string>();
+        if (el.contains("has_pk")) entry.hasPK = el["has_pk"].get<bool>();
+        if (el.contains("table_size")) entry.tableSize = el["table_size"].get<int64_t>();
+        entries.push_back(entry);
+      }
+      return entries;
+    }
+
     pqxx::work txn(conn);
     auto results = txn.exec_params(
         "SELECT schema_name, table_name, db_engine, connection_string, status, "
@@ -172,6 +182,17 @@ MetadataRepository::getCatalogEntries(const std::string &dbEngine,
       entry.tableSize = row[7].is_null() ? 0 : row[7].as<int64_t>();
       entries.push_back(entry);
     }
+
+    json j = json::array();
+    for (const auto& e : entries) {
+      j.push_back({{"schema", e.schema}, {"table", e.table}, {"db_engine", e.dbEngine},
+                  {"connection_string", e.connectionString}, {"status", e.status},
+                  {"pk_columns", e.pkColumns}, {"pk_strategy", e.pkStrategy},
+                  {"has_pk", e.hasPK}, {"table_size", e.tableSize}});
+    }
+    auto expiresAt = std::chrono::system_clock::now() +
+                     std::chrono::minutes(METADATA_CACHE_TTL_MINUTES);
+    cache.saveCacheEntry(cacheKey, j, expiresAt);
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE, "MetadataRepository",
                   "Error getting catalog entries: " + std::string(e.what()));
@@ -256,6 +277,18 @@ void MetadataRepository::insertOrUpdateTable(
       }
     }
     txn.commit();
+
+    try {
+      auto conn2 = getConnection();
+      MetadataCacheRepository cache(conn2);
+      cache.removeEntry("conn_strs:" + dbEngine);
+      cache.removeEntry("catalog_entries:" + dbEngine + ":" +
+                        MetadataCacheRepository::hashKey(tableInfo.connectionString));
+    } catch (const std::exception &e) {
+      Logger::debug(LogCategory::DATABASE, "MetadataRepository",
+                    "Cache invalidation failed (best-effort): " +
+                        std::string(e.what()));
+    }
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE, "MetadataRepository",
                   "Error inserting/updating table: " + std::string(e.what()));
@@ -332,6 +365,20 @@ void MetadataRepository::deleteTable(const std::string &schema,
                       schema, table, dbEngine, connectionString);
     }
     txn.commit();
+
+    try {
+      auto conn2 = getConnection();
+      MetadataCacheRepository cache(conn2);
+      cache.removeEntry("conn_strs:" + dbEngine);
+      if (!connectionString.empty()) {
+        cache.removeEntry("catalog_entries:" + dbEngine + ":" +
+                          MetadataCacheRepository::hashKey(connectionString));
+      }
+    } catch (const std::exception &e) {
+      Logger::debug(LogCategory::DATABASE, "MetadataRepository",
+                    "Cache invalidation failed (best-effort): " +
+                        std::string(e.what()));
+    }
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE, "MetadataRepository",
                   "Error deleting table: " + std::string(e.what()));

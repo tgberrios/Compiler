@@ -33,9 +33,7 @@ std::vector<APICatalogEntry> APICatalogRepository::getActiveAPIs() {
   return entries;
 }
 
-APICatalogEntry APICatalogRepository::getAPIEntry(const std::string &apiName) {
-  APICatalogEntry entry;
-  entry.api_name = "";
+std::optional<APICatalogEntry> APICatalogRepository::getAPIEntry(const std::string &apiName) {
   try {
     auto conn = getConnection();
     pqxx::work txn(conn);
@@ -48,18 +46,21 @@ APICatalogEntry APICatalogRepository::getAPIEntry(const std::string &apiName) {
         "FROM metadata.api_catalog WHERE api_name = $1",
         apiName);
 
-    if (!results.empty()) {
-      entry = rowToEntry(results[0]);
+    if (results.empty()) {
+      txn.commit();
+      return std::nullopt;
     }
+    auto entry = rowToEntry(results[0]);
     txn.commit();
+    return entry;
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE, "getAPIEntry",
                   "Error getting API entry: " + std::string(e.what()));
+    return std::nullopt;
   }
-  return entry;
 }
 
-void APICatalogRepository::updateSyncStatus(const std::string &apiName,
+bool APICatalogRepository::updateSyncStatus(const std::string &apiName,
                                             const std::string &status,
                                             const std::string &lastSyncTime) {
   try {
@@ -71,9 +72,11 @@ void APICatalogRepository::updateSyncStatus(const std::string &apiName,
         "last_sync_time = $2, updated_at = NOW() WHERE api_name = $3",
         status, lastSyncTime, apiName);
     txn.commit();
+    return true;
   } catch (const std::exception &e) {
     Logger::error(LogCategory::DATABASE, "updateSyncStatus",
                   "Error updating sync status: " + std::string(e.what()));
+    return false;
   }
 }
 
