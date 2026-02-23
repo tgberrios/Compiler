@@ -39,7 +39,7 @@ private:
   void collectPerformanceMetrics();
   void collectMetadataMetrics();
   void collectTimestampMetrics();
-  void saveMetricsToDatabase();
+  void saveMetricsToDatabase(const std::string& runId);
   void generateMetricsReport();
 
   std::string getEstimatedStartTime(const std::string &completedAt);

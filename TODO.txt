@@ -119,14 +119,6 @@ host=localhost;user=SYSTEM;password=Yucaquemada1;db=XE;port=1521
 
 oracle esta bugueado
 
-
-
-### Apps / ideas
-- App de astronomía
-- App de calendario (cómo calcularse)
-- App de todo
-- newsboat: lector RSS; noticias del día en recuadro pequeño.
-- ticker: precio cripto/acciones en tiempo real con gráficas ASCII.
 - Webhooks para alertas (full en DB o integrar en monitor).
 - RPG (nota)
 - Pokepath (nota)

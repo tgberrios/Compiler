@@ -2,6 +2,7 @@
 #include "engines/database_engine.h"
 #include "utils/string_utils.h"
 #include "utils/time_utils.h"
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -11,6 +12,50 @@
 #ifdef _WIN32
 #include <errno.h>
 #endif
+
+namespace {
+
+constexpr const char* STATEMENT_TIMEOUT_MS = "30000";
+constexpr const char* LOCK_TIMEOUT_MS = "10000";
+constexpr size_t SCHEMA_NAME_MAX = 100;
+constexpr size_t TABLE_NAME_MAX = 100;
+constexpr size_t DB_ENGINE_MAX = 50;
+constexpr size_t TRANSFER_TYPE_MAX = 20;
+constexpr size_t STATUS_MAX = 20;
+constexpr char METRIC_KEY_SEP = '\x1E';
+
+std::string transferTypeFromCatalogStatus(const std::string& status) {
+  if (status == "full_load" || status == "FULL_LOAD")
+    return "FULL_LOAD";
+  if (status == "incremental" || status == "INCREMENTAL")
+    return "INCREMENTAL";
+  if (status == "sync" || status == "SYNC")
+    return "SYNC";
+  return "UNKNOWN";
+}
+
+void metricStatusFromCatalogStatus(const std::string& status,
+                                   std::string& outStatus,
+                                   std::string& outErrorMessage) {
+  if (status == "ERROR" || status == "FAILED") {
+    outStatus = "FAILED";
+    outErrorMessage = "Transfer failed";
+  } else if (status == "NO_DATA" || status == "EMPTY") {
+    outStatus = "SUCCESS";
+    outErrorMessage = "No data to transfer";
+  } else if (status == "LISTENING_CHANGES" || status == "ACTIVE") {
+    outStatus = "SUCCESS";
+    outErrorMessage = "";
+  } else if (status == "PENDING" || status == "WAITING") {
+    outStatus = "PENDING";
+    outErrorMessage = "Waiting for sync";
+  } else {
+    outStatus = "UNKNOWN";
+    outErrorMessage = "Unknown status: " + status;
+  }
+}
+
+}  // namespace
 
 // Main entry point for collecting all transfer metrics. Orchestrates the
 // complete metrics collection process by calling all collection methods in
@@ -22,8 +67,16 @@
 void MetricsCollector::collectAllMetrics() {
 
   try {
+    std::string runId = TimeUtils::getCurrentTimestamp();
+    Logger::info(LogCategory::METRICS, "collectAllMetrics",
+                 "Starting metrics collection run_id=" + runId);
+
     createMetricsTable();
     collectTransferMetrics();
+    Logger::info(LogCategory::METRICS, "collectAllMetrics",
+                 "Collected transfer metrics for " +
+                     std::to_string(metrics.size()) + " tables (run_id=" +
+                     runId + ")");
     collectPerformanceMetrics();
     collectMetadataMetrics();
     collectTimestampMetrics();
@@ -38,8 +91,10 @@ void MetricsCollector::collectAllMetrics() {
         metric.started_at = getEstimatedStartTime(metric.completed_at);
       }
     }
-    saveMetricsToDatabase();
+    saveMetricsToDatabase(runId);
     generateMetricsReport();
+    Logger::info(LogCategory::METRICS, "collectAllMetrics",
+                 "Metrics collection completed run_id=" + runId);
 
   } catch (const std::exception &e) {
     Logger::error(LogCategory::METRICS, "collectAllMetrics",
@@ -59,8 +114,8 @@ void MetricsCollector::createMetricsTable() {
   try {
     pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
 
-    conn.set_session_var("statement_timeout", "30000");
-    conn.set_session_var("lock_timeout", "10000");
+    conn.set_session_var("statement_timeout", STATEMENT_TIMEOUT_MS);
+    conn.set_session_var("lock_timeout", LOCK_TIMEOUT_MS);
 
     if (!conn.is_open()) {
       Logger::error(LogCategory::METRICS, "createMetricsTable",
@@ -123,8 +178,8 @@ void MetricsCollector::collectTransferMetrics() {
   try {
     pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
 
-    conn.set_session_var("statement_timeout", "30000");
-    conn.set_session_var("lock_timeout", "10000");
+    conn.set_session_var("statement_timeout", STATEMENT_TIMEOUT_MS);
+    conn.set_session_var("lock_timeout", LOCK_TIMEOUT_MS);
 
     if (!conn.is_open()) {
       Logger::error(LogCategory::METRICS, "collectTransferMetrics",
@@ -141,13 +196,10 @@ void MetricsCollector::collectTransferMetrics() {
         "c.db_engine,"
         "c.status,"
         "COALESCE(pg.n_live_tup, 0) as current_records,"
-        "COALESCE(pg_total_relation_size(pc.oid), 0) as table_size_bytes "
+        "COALESCE(pg_total_relation_size(pg.relid), 0) as table_size_bytes "
         "FROM metadata.catalog c "
         "LEFT JOIN pg_stat_user_tables pg ON lower(c.schema_name) = "
-        "pg.schemaname AND "
-        "lower(c.table_name) = pg.relname "
-        "LEFT JOIN pg_class pc ON pg.relname = pc.relname AND pg.schemaname "
-        "= pc.relnamespace::regnamespace::text "
+        "pg.schemaname AND lower(c.table_name) = pg.relname "
         "WHERE c.db_engine IS NOT NULL AND c.active = true;";
 
     auto result = txn.exec(transferQuery);
@@ -173,8 +225,10 @@ void MetricsCollector::collectTransferMetrics() {
       metric.db_engine = row[2].as<std::string>();
 
       if (metric.schema_name.empty() || metric.table_name.empty() ||
-          metric.db_engine.empty() || metric.schema_name.length() > 100 ||
-          metric.table_name.length() > 100 || metric.db_engine.length() > 50) {
+          metric.db_engine.empty() ||
+          metric.schema_name.length() > SCHEMA_NAME_MAX ||
+          metric.table_name.length() > TABLE_NAME_MAX ||
+          metric.db_engine.length() > DB_ENGINE_MAX) {
         continue;
       }
 
@@ -202,34 +256,8 @@ void MetricsCollector::collectTransferMetrics() {
 
       metric.io_operations_per_second = 0;
 
-      // Map transfer type based on status
-      if (status == "full_load" || status == "FULL_LOAD") {
-        metric.transfer_type = "FULL_LOAD";
-      } else if (status == "incremental" || status == "INCREMENTAL") {
-        metric.transfer_type = "INCREMENTAL";
-      } else if (status == "sync" || status == "SYNC") {
-        metric.transfer_type = "SYNC";
-      } else {
-        metric.transfer_type = "UNKNOWN";
-      }
-
-      // Map status based on catalog status
-      if (status == "ERROR" || status == "FAILED") {
-        metric.status = "FAILED";
-        metric.error_message = "Transfer failed";
-      } else if (status == "NO_DATA" || status == "EMPTY") {
-        metric.status = "SUCCESS";
-        metric.error_message = "No data to transfer";
-      } else if (status == "LISTENING_CHANGES" || status == "ACTIVE") {
-        metric.status = "SUCCESS";
-        metric.error_message = "";
-      } else if (status == "PENDING" || status == "WAITING") {
-        metric.status = "PENDING";
-        metric.error_message = "Waiting for sync";
-      } else {
-        metric.status = "UNKNOWN";
-        metric.error_message = "Unknown status: " + status;
-      }
+      metric.transfer_type = transferTypeFromCatalogStatus(status);
+      metricStatusFromCatalogStatus(status, metric.status, metric.error_message);
 
       metric.started_at = TimeUtils::getCurrentTimestamp();
       metric.completed_at = "";
@@ -260,8 +288,8 @@ void MetricsCollector::collectPerformanceMetrics() {
 
     pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
 
-    conn.set_session_var("statement_timeout", "30000");
-    conn.set_session_var("lock_timeout", "10000");
+    conn.set_session_var("statement_timeout", STATEMENT_TIMEOUT_MS);
+    conn.set_session_var("lock_timeout", LOCK_TIMEOUT_MS);
 
     if (!conn.is_open()) {
       Logger::error(LogCategory::METRICS, "collectPerformanceMetrics",
@@ -282,11 +310,8 @@ void MetricsCollector::collectPerformanceMetrics() {
         "pst.n_dead_tup as dead_tuples,"
         "pst.last_autoanalyze,"
         "pst.last_autovacuum,"
-        "COALESCE(pg_total_relation_size(pc.oid), 0) as table_size_bytes "
+        "COALESCE(pg_total_relation_size(pst.relid), 0) as table_size_bytes "
         "FROM pg_stat_user_tables pst "
-        "LEFT JOIN pg_class pc ON pst.relname = pc.relname "
-        "AND pst.schemaname = "
-        "pc.relnamespace::regnamespace::text "
         "WHERE pst.schemaname IN (SELECT DISTINCT lower(schema_name) FROM "
         "metadata.catalog);";
 
@@ -302,13 +327,13 @@ void MetricsCollector::collectPerformanceMetrics() {
       if (row[0].is_null() || row[1].is_null()) {
         continue;
       }
-      std::string key =
-          row[0].as<std::string>() + "\x1E" + row[1].as<std::string>();
+      std::string key = row[0].as<std::string>() + METRIC_KEY_SEP +
+                        row[1].as<std::string>();
       perfMap[key] = row;
     }
 
     for (auto &metric : metrics) {
-      std::string key = metric.schema_name + "\x1E" + metric.table_name;
+      std::string key = metric.schema_name + METRIC_KEY_SEP + metric.table_name;
       auto it = perfMap.find(key);
       if (it != perfMap.end()) {
         const auto &row = it->second;
@@ -355,8 +380,8 @@ void MetricsCollector::collectMetadataMetrics() {
 
     pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
 
-    conn.set_session_var("statement_timeout", "30000");
-    conn.set_session_var("lock_timeout", "10000");
+    conn.set_session_var("statement_timeout", STATEMENT_TIMEOUT_MS);
+    conn.set_session_var("lock_timeout", LOCK_TIMEOUT_MS);
 
     if (!conn.is_open()) {
       Logger::error(LogCategory::METRICS, "collectMetadataMetrics",
@@ -387,24 +412,33 @@ void MetricsCollector::collectMetadataMetrics() {
       if (row[0].is_null() || row[1].is_null() || row[2].is_null()) {
         continue;
       }
-      std::string key = row[0].as<std::string>() + "\x1E" +
-                        row[1].as<std::string>() + "\x1E" +
+      std::string key = row[0].as<std::string>() + METRIC_KEY_SEP +
+                        row[1].as<std::string>() + METRIC_KEY_SEP +
                         row[2].as<std::string>();
       metaMap[key] = row;
     }
 
     for (auto &metric : metrics) {
-      std::string key = metric.schema_name + "\x1E" + metric.table_name +
-                        "\x1E" + metric.db_engine;
+      std::string key = metric.schema_name + METRIC_KEY_SEP +
+                        metric.table_name + METRIC_KEY_SEP + metric.db_engine;
       auto it = metaMap.find(key);
       if (it != metaMap.end()) {
         const auto &row = it->second;
         if (row.size() >= 5) {
           std::string status = row[3].is_null() ? "" : row[3].as<std::string>();
-          if (status == "full_load") {
+          std::string statusLower = status;
+          std::transform(statusLower.begin(), statusLower.end(),
+                        statusLower.begin(), ::tolower);
+          if (statusLower == "full_load") {
             metric.transfer_type = "FULL_LOAD";
-          } else if (status == "incremental") {
+          } else if (statusLower == "incremental") {
             metric.transfer_type = "INCREMENTAL";
+          } else if (statusLower == "sync" || statusLower == "listening_changes" ||
+                     statusLower == "active") {
+            if (metric.transfer_type.empty() ||
+                metric.transfer_type == "UNKNOWN") {
+              metric.transfer_type = "SYNC";
+            }
           } else if (metric.transfer_type.empty() ||
                      metric.transfer_type == "UNKNOWN") {
             metric.transfer_type = "SYNC";
@@ -445,8 +479,8 @@ void MetricsCollector::collectTimestampMetrics() {
 
     pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
 
-    conn.set_session_var("statement_timeout", "30000");
-    conn.set_session_var("lock_timeout", "10000");
+    conn.set_session_var("statement_timeout", STATEMENT_TIMEOUT_MS);
+    conn.set_session_var("lock_timeout", LOCK_TIMEOUT_MS);
 
     if (!conn.is_open()) {
       Logger::error(LogCategory::METRICS, "collectTimestampMetrics",
@@ -477,15 +511,15 @@ void MetricsCollector::collectTimestampMetrics() {
       if (row[0].is_null() || row[1].is_null() || row[2].is_null()) {
         continue;
       }
-      std::string key = row[0].as<std::string>() + "\x1E" +
-                        row[1].as<std::string>() + "\x1E" +
+      std::string key = row[0].as<std::string>() + METRIC_KEY_SEP +
+                        row[1].as<std::string>() + METRIC_KEY_SEP +
                         row[2].as<std::string>();
       timeMap[key] = row;
     }
 
     for (auto &metric : metrics) {
-      std::string key = metric.schema_name + "\x1E" + metric.table_name +
-                        "\x1E" + metric.db_engine;
+      std::string key = metric.schema_name + METRIC_KEY_SEP +
+                        metric.table_name + METRIC_KEY_SEP + metric.db_engine;
       auto it = timeMap.find(key);
       if (it != timeMap.end()) {
         const auto &row = it->second;
@@ -513,11 +547,11 @@ void MetricsCollector::collectTimestampMetrics() {
 // Saves all collected metrics to the metadata.transfer_metrics table using
 // parameterized queries to prevent SQL injection. Uses INSERT ... ON CONFLICT
 // DO UPDATE to handle duplicate entries (same schema/table/engine/date). If a
-// record already exists for the same day, updates it with new values. Handles
-// NULL values properly by passing nullptr for empty strings. Commits all
-// inserts/updates in a single transaction for atomicity. If saving fails, logs
-// an error but does not throw an exception.
-void MetricsCollector::saveMetricsToDatabase() {
+// record already exists for the same day, updates it with new values. NULLs for
+// optional fields (error_message, started_at, completed_at) are passed via
+// params.append() with no arguments. Commits all inserts/updates in a single
+// transaction for atomicity. If saving fails, logs an error but does not throw.
+void MetricsCollector::saveMetricsToDatabase(const std::string& runId) {
   try {
     if (metrics.empty()) {
       return;
@@ -525,8 +559,8 @@ void MetricsCollector::saveMetricsToDatabase() {
 
     pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
 
-    conn.set_session_var("statement_timeout", "30000");
-    conn.set_session_var("lock_timeout", "10000");
+    conn.set_session_var("statement_timeout", STATEMENT_TIMEOUT_MS);
+    conn.set_session_var("lock_timeout", LOCK_TIMEOUT_MS);
 
     if (!conn.is_open()) {
       Logger::error(LogCategory::METRICS, "saveMetricsToDatabase",
@@ -557,12 +591,16 @@ void MetricsCollector::saveMetricsToDatabase() {
         "started_at = EXCLUDED.started_at,"
         "completed_at = EXCLUDED.completed_at;";
 
+    size_t savedCount = 0;
     for (const auto &metric : metrics) {
-      if (metric.schema_name.length() > 100 ||
-          metric.table_name.length() > 100 || metric.db_engine.length() > 50 ||
-          metric.transfer_type.length() > 20 || metric.status.length() > 20) {
+      if (metric.schema_name.length() > SCHEMA_NAME_MAX ||
+          metric.table_name.length() > TABLE_NAME_MAX ||
+          metric.db_engine.length() > DB_ENGINE_MAX ||
+          metric.transfer_type.length() > TRANSFER_TYPE_MAX ||
+          metric.status.length() > STATUS_MAX) {
         continue;
       }
+      ++savedCount;
 
       pqxx::params params;
       params.append(metric.schema_name);
@@ -574,13 +612,25 @@ void MetricsCollector::saveMetricsToDatabase() {
       params.append(metric.io_operations_per_second);
       params.append(metric.transfer_type);
       params.append(metric.status);
-      params.append(metric.error_message.empty() ? nullptr : metric.error_message.c_str());
-      params.append(metric.started_at.empty() ? nullptr : metric.started_at.c_str());
-      params.append(metric.completed_at.empty() ? nullptr : metric.completed_at.c_str());
+      if (metric.error_message.empty())
+        params.append();
+      else
+        params.append(metric.error_message);
+      if (metric.started_at.empty())
+        params.append();
+      else
+        params.append(metric.started_at);
+      if (metric.completed_at.empty())
+        params.append();
+      else
+        params.append(metric.completed_at);
       txn.exec(pqxx::zview(insertQuery), params);
     }
 
     txn.commit();
+    Logger::info(LogCategory::METRICS, "saveMetricsToDatabase",
+                 "Saved " + std::to_string(savedCount) +
+                     " metrics to database (run_id=" + runId + ")");
 
   } catch (const std::exception &e) {
     Logger::error(LogCategory::METRICS, "saveMetricsToDatabase",
@@ -599,8 +649,8 @@ void MetricsCollector::generateMetricsReport() {
   try {
     pqxx::connection conn(DatabaseConfig::getPostgresConnectionString());
 
-    conn.set_session_var("statement_timeout", "30000");
-    conn.set_session_var("lock_timeout", "10000");
+    conn.set_session_var("statement_timeout", STATEMENT_TIMEOUT_MS);
+    conn.set_session_var("lock_timeout", LOCK_TIMEOUT_MS);
 
     if (!conn.is_open()) {
       Logger::error(LogCategory::METRICS, "generateMetricsReport",

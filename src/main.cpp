@@ -16,7 +16,6 @@
 #include "monitoring/QueryPerformanceAnalyzer.h"
 #include "catalog/DataLakeMappingManager.h"
 #include "catalog/WorkflowVersionManager.h"
-#include "maintenance/CDCCleanupManager.h"
 #include "catalog/UnusedObjectsDetector.h"
 #include "third_party/json.hpp"
 #include <atomic>
@@ -824,111 +823,6 @@ int handleCatalogCommand() {
   }
 }
 
-int handleMaintenanceCommand() {
-  try {
-    DatabaseConfig::loadFromFile("config.json");
-    if (!DatabaseConfig::isInitialized()) {
-      nlohmann::json output;
-      output["success"] = false;
-      output["error"] = "Database configuration failed to initialize";
-      std::cerr << output.dump(2) << std::endl;
-      return 1;
-    }
-    
-    std::string metadataConnStr = DatabaseConfig::getPostgresConnectionString();
-    std::string input;
-    std::string line;
-    while (std::getline(std::cin, line)) {
-      input += line + "\n";
-    }
-    
-    if (input.empty()) {
-      nlohmann::json output;
-      output["success"] = false;
-      output["error"] = "No input provided";
-      std::cerr << output.dump(2) << std::endl;
-      Logger::shutdown();
-      return 1;
-    }
-    
-    nlohmann::json request = nlohmann::json::parse(input);
-    std::string operation = request.value("operation", "");
-    nlohmann::json output;
-    
-    if (operation == "create_cleanup_policy") {
-      CDCCleanupManager cleanup(metadataConnStr);
-      CDCCleanupManager::CleanupPolicy policy;
-      policy.connectionString = request["connection_string"];
-      policy.dbEngine = request["db_engine"];
-      policy.retentionDays = request.value("retention_days", 30);
-      policy.batchSize = request.value("batch_size", 10000);
-      policy.enabled = request.value("enabled", true);
-      
-      int policyId = cleanup.createOrUpdatePolicy(policy);
-      output["success"] = policyId > 0;
-      output["policy_id"] = policyId;
-      
-    } else if (operation == "execute_cleanup") {
-      CDCCleanupManager cleanup(metadataConnStr);
-      std::string connectionString = request.value("connection_string", "");
-      std::string dbEngine = request.value("db_engine", "");
-      int policyId = request.value("policy_id", 0);
-      
-      CDCCleanupManager::CleanupResult result;
-      if (policyId > 0) {
-        result = cleanup.executeCleanup(policyId);
-      } else if (!connectionString.empty() && !dbEngine.empty()) {
-        result = cleanup.executeCleanup(connectionString, dbEngine);
-      } else {
-        output["success"] = false;
-        output["error"] = "Must provide policy_id or connection_string+db_engine";
-        std::cout << output.dump(2) << std::endl;
-        Logger::shutdown();
-        return 1;
-      }
-      
-      output["success"] = result.status == "completed";
-      output["cleanup_id"] = result.cleanupId;
-      output["rows_deleted"] = result.rowsDeleted;
-      output["tables_cleaned"] = result.tablesCleaned;
-      output["status"] = result.status;
-      
-    } else if (operation == "get_cleanup_history") {
-      CDCCleanupManager cleanup(metadataConnStr);
-      std::string connectionString = request.value("connection_string", "");
-      int limit = request.value("limit", 100);
-      
-      auto history = cleanup.getCleanupHistory(connectionString, limit);
-      output["success"] = true;
-      output["history"] = nlohmann::json::array();
-      for (const auto& h : history) {
-        nlohmann::json histJson;
-        histJson["cleanup_id"] = h.cleanupId;
-        histJson["connection_string"] = h.connectionString;
-        histJson["rows_deleted"] = h.rowsDeleted;
-        histJson["status"] = h.status;
-        output["history"].push_back(histJson);
-      }
-      
-    } else {
-      output["success"] = false;
-      output["error"] = "Unknown operation: " + operation;
-    }
-    
-    std::cout << output.dump(2) << std::endl;
-    Logger::shutdown();
-    return output.value("success", false) ? 0 : 1;
-    
-  } catch (const std::exception& e) {
-    nlohmann::json output;
-    output["success"] = false;
-    output["error"] = e.what();
-    std::cerr << output.dump(2) << std::endl;
-    Logger::shutdown();
-    return 1;
-  }
-}
-
 int main(int argc, char* argv[]) {
   if (argc > 1 && (std::string(argv[1]) == "--execute-dbt-model" || 
                    std::string(argv[1]) == "--run-dbt-tests" || 
@@ -948,9 +842,6 @@ int main(int argc, char* argv[]) {
     return handleCatalogCommand();
   }
   
-  if (argc > 1 && std::string(argv[1]) == "--maintenance") {
-    return handleMaintenanceCommand();
-  }
   try {
     DatabaseConfig::loadFromFile("config.json");
 
