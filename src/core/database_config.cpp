@@ -16,8 +16,8 @@ using json = nlohmann::json;
 
 std::string DatabaseConfig::postgres_host_ = "localhost";
 std::string DatabaseConfig::postgres_db_ = "DataLake";
-std::string DatabaseConfig::postgres_user_ = "tomy.berrios";
-std::string DatabaseConfig::postgres_password_ = "Yucaquemada1";
+std::string DatabaseConfig::postgres_user_ = "postgres";
+std::string DatabaseConfig::postgres_password_ = "";
 std::string DatabaseConfig::postgres_port_ = "5432";
 bool DatabaseConfig::initialized_ = false;
 std::mutex DatabaseConfig::configMutex_;
@@ -108,6 +108,7 @@ void DatabaseConfig::loadFromFile(const std::string &configPath) {
       if (pgConfig.contains("port")) {
         std::string port = pgConfig["port"].get<std::string>();
         if (!validateAndSetPort(port, postgres_port_)) {
+          postgres_port_ = "5432";
           if (!port.empty()) {
             Logger::warning(LogCategory::CONFIG, "DatabaseConfig",
                             "Invalid port number: " + port +
@@ -150,6 +151,7 @@ void DatabaseConfig::loadFromEnvUnlocked() {
   if (port && strlen(port) > 0) {
     std::string portStr(port);
     if (!validateAndSetPort(portStr, postgres_port_)) {
+      postgres_port_ = "5432";
       Logger::warning(LogCategory::CONFIG, "DatabaseConfig",
                       "Invalid port number: " + portStr +
                           ", using default: 5432");

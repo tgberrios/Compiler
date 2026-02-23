@@ -46,6 +46,13 @@ private:
   static bool showFileLine;
   static std::mutex configMutex;
 
+  // Deduplication: suppress identical log (level+category+function+message)
+  // within this window to avoid spam.
+  static std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+      dedupMap_;
+  static constexpr std::chrono::seconds dedupWindow{60};
+  static constexpr size_t dedupMaxSize{256};
+
   static const std::unordered_map<std::string, LogCategory> categoryMap;
   static const std::unordered_map<std::string, LogLevel> levelMap;
 
@@ -146,18 +153,40 @@ private:
 
     std::string levelStr = getLevelString(level);
     std::string categoryStr = getCategoryString(category);
-    std::string timestamp = getCurrentTimestamp();
+    std::string key = levelStr + "|" + categoryStr + "|" + function + "|" +
+                      message;
 
     DatabaseLogWriter *writer = nullptr;
     {
       std::lock_guard<std::mutex> lock(logMutex);
+      auto now = std::chrono::steady_clock::now();
+      auto it = dedupMap_.find(key);
+      if (it != dedupMap_.end() &&
+          (now - it->second) < dedupWindow) {
+        return;
+      }
+      if (dedupMap_.size() >= dedupMaxSize) {
+        for (auto e = dedupMap_.begin(); e != dedupMap_.end();) {
+          if (now - e->second > dedupWindow) {
+            e = dedupMap_.erase(e);
+          } else {
+            ++e;
+          }
+        }
+      }
+      dedupMap_[key] = now;
       if (dbWriter_ && dbWriter_->isEnabled() && dbWriter_->isOpen()) {
         writer = dbWriter_.get();
       }
     }
 
+    std::string timestamp = getCurrentTimestamp();
     if (writer) {
       writer->writeParsed(levelStr, categoryStr, function, message);
+    } else {
+      std::cerr << formatLogMessage(timestamp, levelStr, categoryStr,
+                                    function, message)
+                << std::endl;
     }
   }
 

@@ -2,12 +2,15 @@
 #include "core/Config.h"
 #include "core/database_config.h"
 #include <algorithm>
+#include <iostream>
 #include <pqxx/pqxx>
 
 // Static member initialization for Logger class. dbWriter_ holds the database
 // log writer instance, logMutex provides thread safety for logging operations.
 std::unique_ptr<DatabaseLogWriter> Logger::dbWriter_;
 std::mutex Logger::logMutex;
+std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+    Logger::dedupMap_;
 
 // Debug configuration variables. These control the logging behavior and can
 // be configured via the metadata.config table in the database. currentLogLevel
@@ -40,6 +43,16 @@ const std::unordered_map<std::string, LogLevel> Logger::levelMap = {
     {"ERROR", LogLevel::ERROR},      {"FATAL", LogLevel::CRITICAL},
     {"CRITICAL", LogLevel::CRITICAL}};
 
+namespace {
+bool parseBoolConfig(const std::string& value) {
+  if (value.empty() || value.length() > 10)
+    return false;
+  std::string lower(value);
+  std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+  return (lower == "true" || lower == "1");
+}
+}  // namespace
+
 // Loads debug configuration settings from the metadata.config table in the
 // PostgreSQL database. This function connects to the database, queries for
 // configuration keys (debug_level, debug_show_timestamps, debug_show_thread_id,
@@ -53,37 +66,33 @@ void Logger::loadDebugConfig() {
 
   try {
     if (!DatabaseConfig::isInitialized()) {
+      std::cerr << "Logger: loadDebugConfig failed: DatabaseConfig not initialized"
+                << std::endl;
       setDefaultConfig();
       return;
     }
 
     std::string connStr = DatabaseConfig::getPostgresConnectionString();
     if (connStr.empty()) {
+      std::cerr << "Logger: loadDebugConfig failed: empty connection string"
+                << std::endl;
       setDefaultConfig();
       return;
     }
 
     pqxx::connection conn(connStr);
     if (!conn.is_open()) {
-      setDefaultConfig();
-      return;
-    }
-
-    try {
-      pqxx::work testTxn(conn);
-      testTxn.exec("SELECT 1");
-      testTxn.commit();
-    } catch (const std::exception &) {
+      std::cerr << "Logger: loadDebugConfig failed: connection not open"
+                << std::endl;
       setDefaultConfig();
       return;
     }
 
     pqxx::work txn(conn);
-
-    auto result = txn.exec(
-        "SELECT key, value FROM metadata.config WHERE key IN "
-        "('debug_level', 'debug_show_timestamps', 'debug_show_thread_id', "
-        "'debug_show_file_line')");
+    auto result = txn.exec_params(
+        "SELECT key, value FROM metadata.config WHERE key IN ($1, $2, $3, $4)",
+        "debug_level", "debug_show_timestamps", "debug_show_thread_id",
+        "debug_show_file_line");
 
     for (const auto &row : result) {
       try {
@@ -101,38 +110,29 @@ void Logger::loadDebugConfig() {
             }
           }
         } else if (key == "debug_show_timestamps") {
-          if (value.length() <= 10) {
-            std::string lowerValue = value;
-            std::transform(lowerValue.begin(), lowerValue.end(),
-                           lowerValue.begin(), ::tolower);
-            showTimestamps = (lowerValue == "true" || lowerValue == "1");
-          }
+          showTimestamps = parseBoolConfig(value);
         } else if (key == "debug_show_thread_id") {
-          if (value.length() <= 10) {
-            std::string lowerValue = value;
-            std::transform(lowerValue.begin(), lowerValue.end(),
-                           lowerValue.begin(), ::tolower);
-            showThreadId = (lowerValue == "true" || lowerValue == "1");
-          }
+          showThreadId = parseBoolConfig(value);
         } else if (key == "debug_show_file_line") {
-          if (value.length() <= 10) {
-            std::string lowerValue = value;
-            std::transform(lowerValue.begin(), lowerValue.end(),
-                           lowerValue.begin(), ::tolower);
-            showFileLine = (lowerValue == "true" || lowerValue == "1");
-          }
+          showFileLine = parseBoolConfig(value);
         }
       } catch (const std::exception &) {
+        // Skip row on parse failure (e.g. null key/value or invalid value)
       }
     }
 
     txn.commit();
 
   } catch (const pqxx::sql_error &e) {
+    std::cerr << "Logger: loadDebugConfig failed (sql): " << e.what()
+              << std::endl;
     setDefaultConfig();
   } catch (const pqxx::broken_connection &e) {
+    std::cerr << "Logger: loadDebugConfig failed (connection): " << e.what()
+              << std::endl;
     setDefaultConfig();
   } catch (const std::exception &e) {
+    std::cerr << "Logger: loadDebugConfig failed: " << e.what() << std::endl;
     setDefaultConfig();
   }
 }

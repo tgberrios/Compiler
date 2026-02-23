@@ -1427,6 +1427,10 @@ int64_t DataVaultBuilder::logToProcessLog(const std::string &vaultName,
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) RETURNING id"),
         params);
 
+    if (result.empty()) {
+      txn.commit();
+      return 0;
+    }
     int64_t logId = result[0][0].as<int64_t>();
     txn.commit();
     return logId;
